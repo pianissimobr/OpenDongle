@@ -1,0 +1,30 @@
+# Artefatos de instalação / runtime
+backup/
+backup*/
+firmware/
+work/
+logs/
+out/
+*.bin
+*.img
+*.raw
+*.zip
+openstick-debian.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets / credenciais
+.env
+*.pem
+id_rsa*
+known_hosts
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
