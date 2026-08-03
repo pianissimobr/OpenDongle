@@ -150,12 +150,15 @@ def main():
         f"hostname {AVAHI_HOSTNAME}); "
         # CRÍTICO: registrar o hostname no /etc/hosts, senão 'sudo' e
         # outros reclamam \"unable to resolve host\" e ficam lentos.
-        f"grep -q '127.0.1.1[[:space:]]*{AVAHI_HOSTNAME}' /etc/hosts || "
-        f"echo '127.0.1.1 {AVAHI_HOSTNAME}' >> /etc/hosts; "
+        # Aspas DUPLAS aqui de propósito: isto tudo já está dentro de um
+        # bash -c '...' com aspas simples — aspas simples aninhadas
+        # fecham a string cedo demais e quebram o resto do comando.
+        f'grep -q "127.0.1.1[[:space:]]*{AVAHI_HOSTNAME}" /etc/hosts || '
+        f'echo "127.0.1.1 {AVAHI_HOSTNAME}" >> /etc/hosts; '
         # garante que o avahi publica o hostname na rede (mDNS)
-        "sed -i 's/^#*host-name=.*/host-name=" + AVAHI_HOSTNAME + "/' "
+        'sed -i "s/^#*host-name=.*/host-name=' + AVAHI_HOSTNAME + '/" '
         "/etc/avahi/avahi-daemon.conf 2>/dev/null || true; "
-        "sed -i 's/^#*publish-workstation=.*/publish-workstation=yes/' "
+        'sed -i "s/^#*publish-workstation=.*/publish-workstation=yes/" '
         "/etc/avahi/avahi-daemon.conf 2>/dev/null || true; "
         # avahi precisa ouvir na interface da rede USB (não só wlan)
         "systemctl enable avahi-daemon >/dev/null 2>&1; "
