@@ -23,7 +23,8 @@ import re
 import subprocess
 import sys
 
-HOTSPOT_CON = "Hotspot"        # nome da conexão NM do hotspot
+HOTSPOT_CON = "hotspot"        # nome da conexão NM do hotspot (minúsculo
+                                # na imagem base do OpenStick-Builder)
 IFACE_WIFI = "wlan0"
 ADMIN_USER = "user"
 SSID_PADRAO = "OpenDongle"
