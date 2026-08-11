@@ -1,10 +1,6 @@
 # 🔌 OpenDongle
 
-> Transforme modems 4G descartados em pequenos servidores Linux — plugou, tomou um café, voltou, tá funcionando.
-
 **OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
-
-> ⚠️ **Status: em desenvolvimento ativo / fase de testes.** O fluxo de instalação do Debian está validado em hardware real. As etapas de otimização e do painel de configuração estão em teste. Veja a seção [Status](#status) antes de usar.
 
 ---
 
@@ -102,21 +98,7 @@ sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
 
 - **Chip:** Qualcomm MSM8916 (Snapdragon 410), quad-core ARM64
 - **RAM:** ~382 MB (por isso as otimizações importam tanto)
-- **Placas testadas:** UZ801 e variantes. O instalador detecta ou testa a placa automaticamente.
-
----
-
-## <a name="status"></a>✅ Status
-
-| Componente | Estado |
-|------------|--------|
-| Instalação do Debian | ✅ Validado em hardware real |
-| Backup / recuperação | ✅ Validado |
-| Otimização (zram, eMMC) | 🧪 Em teste |
-| Painel OpenDongle | 🧪 Em teste |
-| Guardião de uplink | 🧪 Em teste |
-| Suporte a placas além da UZ801 | ⏳ A confirmar |
-
+- **Placas testadas:** UZ801 e variantes. O instalador detecta ou testa a placa automaticamente
 ---
 
 ## ⚠️ Avisos
