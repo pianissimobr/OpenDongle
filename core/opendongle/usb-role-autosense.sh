@@ -2,8 +2,10 @@
 # usb-role-autosense.sh
 #   1) grupos de acesso pro 'user'
 #   2) Bluetooth sempre ativo
-#   3) papel USB: PC -> DEVICE (RNDIS mgmt); senao -> HOST
-#   4) em HOST: conexao 4G plug-and-play (le operadora do SIM -> APN)
+#   3) LEDs liberados pro grupo 'leds' (nao existe pronto na imagem)
+#   4) portas AT/QMI do modem liberadas pro grupo 'dialout', em qualquer papel
+#   5) papel USB: PC -> DEVICE (RNDIS mgmt); senao -> HOST
+#   6) em HOST: conexao 4G plug-and-play (le operadora do SIM -> APN)
 set -u
 
 ROLE_SW=/sys/class/usb_role/ci_hdrc.0-role-switch/role
@@ -13,7 +15,11 @@ QMI_DEV=/dev/wwan0qmi0
 AT_DEV=/dev/wwan0at0
 APN_CONF=/etc/usb-role-autosense-apn.conf
 USERNAME="user"
-GROUPS_LIST="audio video dialout plugdev netdev input tty render lp bluetooth disk davfs users"
+LEDS="red:power green:wlan blue:wan"
+# "leds" nao e' grupo padrao da imagem (diferente de audio/video/dialout/
+# disk...); criamos ele mesmo logo abaixo, antes do loop que atribui os
+# grupos, pra ja entrar na lista como qualquer outro.
+GROUPS_LIST="audio video dialout plugdev netdev input tty render lp bluetooth disk davfs users leds"
 WAIT=${USB_SENSE_WAIT:-6}
 PGW_IF="wwan0"
 LOG=/var/log/usb-role-autosense.log
@@ -74,6 +80,11 @@ declare -A APN_MAP=(
 # prova as dependencias (instala se faltar)
 ensure_deps
 
+# grupo "leds": nao vem pronto na imagem (diferente de audio/video/disk/
+# etc.), entao criamos aqui, ANTES do loop de grupos, pra ele poder
+# entrar no GROUPS_LIST como qualquer outro.
+getent group leds >/dev/null 2>&1 || { groupadd -r leds 2>/dev/null && log "grupo 'leds' criado"; }
+
 # ---------- (A) grupos ----------
 if getent passwd "$USERNAME" >/dev/null; then
     for g in $GROUPS_LIST; do
@@ -92,7 +103,33 @@ else
     log "bluez/hciconfig ausente"
 fi
 
-# ---------- (C) papel USB ----------
+# ---------- (C) LEDs pro grupo 'leds', sem sudo ----------
+# so brightness/trigger: sao fixos, sempre existem. delay_on/delay_off
+# (do trigger "timer") sao criados pelo kernel na hora que o trigger muda
+# pra "timer" -- nao da pra fixar permissao de boot pra algo que ainda
+# nao existe nesse momento, entao esses dois continuam so-root.
+for led in $LEDS; do
+    d="/sys/class/leds/$led"
+    [ -d "$d" ] || continue
+    chgrp leds "$d/brightness" "$d/trigger" 2>/dev/null
+    chmod 664 "$d/brightness" "$d/trigger" 2>/dev/null
+done
+log "LEDs liberados pro grupo 'leds' (brightness/trigger; delay_on/off continuam so-root)"
+
+# ---------- (D) modem AT/QMI liberado pro grupo 'dialout', em qualquer papel ----------
+# antes, isso so' rodava dentro do setup_4g() (so' em modo HOST). O
+# usuario pode querer ler/mandar AT manualmente mesmo em modo DEVICE.
+i=0
+while [ ! -e "$AT_DEV" ] && [ "$i" -lt 15 ]; do /bin/sleep 1; i=$((i+1)); done
+if [ -e "$AT_DEV" ] || [ -e "$QMI_DEV" ]; then
+    chgrp dialout "$AT_DEV" "$QMI_DEV" 2>/dev/null
+    chmod 660 "$AT_DEV" "$QMI_DEV" 2>/dev/null
+    log "modem: portas AT/QMI liberadas pro grupo dialout"
+else
+    log "modem: portas AT/QMI nao apareceram em 15s (sem firmware mpss?)"
+fi
+
+# ---------- (E) papel USB ----------
 usb_connected_to_pc() {
     [ "$(cat "$UDC_STATE" 2>/dev/null)" = "configured" ] && return 0
     [ "$(cat "$USB0_CARRIER" 2>/dev/null)" = "1" ] && return 0
@@ -112,7 +149,7 @@ else
     log "nenhum PC -> HOST"
 fi
 
-# ---------- (D) 4G plug-and-play ----------
+# ---------- (F) 4G plug-and-play ----------
 # helper: envia comando AT e devolve a resposta (usando o AT port do modem)
 at_resp() { # cmd tempo  (nunca travas: timeout interno no python + timeout externo)
     ATDEV="$AT_DEV" timeout 10 python3 - "$1" "$2" <<'PY'
@@ -175,7 +212,7 @@ get_apn_from_sim() {
 
 setup_4g() {
     command -v qmicli >/dev/null 2>&1 || { log "4G: qmicli ausente"; return 1; }
-    chgrp dialout "$QMI_DEV" "$AT_DEV" 2>/dev/null; chmod 660 "$QMI_DEV" "$AT_DEV" 2>/dev/null
+    # chgrp/chmod das portas AT/QMI ja' rodou na secao (D), pra qualquer papel
 
     local i=0
     while [ ! -e "$QMI_DEV" ] && [ "$i" -lt 30 ]; do /bin/sleep 1; i=$((i+1)); done
