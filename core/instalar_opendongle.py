@@ -7,6 +7,8 @@ Coloca no dongle, via SSH:
   - motor único + CLI + painel web (em /opt/opendongle)
   - comando `opendongle` em /usr/local/bin (a CLI)
   - serviço systemd do painel web (porta 80)
+  - serviço systemd do uplink guard (gateway condicional)
+  - serviço systemd dos LEDs (papel USB, modo Wi-Fi, internet, áudio)
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
 
@@ -23,7 +25,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent / "opendongle"
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
-        "uplink_guard.py"]
+        "uplink_guard.py", "opendongle_led.py"]
 
 UNIT = """[Unit]
 Description=OpenDongle painel web
@@ -48,6 +50,22 @@ After=network.target dnsmasq.service
 ExecStart=/usr/bin/python3 /opt/opendongle/uplink_guard.py
 Restart=always
 RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# Serviço dos LEDs: red:power/green:wlan/blue:wan contam papel USB (device/
+# host), modo Wi-Fi (cliente/hotspot) e internet sem precisar de SSH.
+UNIT_LED = """[Unit]
+Description=OpenDongle LED (papel USB, modo Wi-Fi, internet e áudio)
+After=network.target NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_led.py
+Restart=on-failure
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -124,9 +142,13 @@ def main():
         "cat > /etc/systemd/system/opendongle-uplink.service << \"EOF\"\n"
         + UNIT_UPLINK +
         "EOF\n"
+        "cat > /etc/systemd/system/opendongle-led.service << \"EOF\"\n"
+        + UNIT_LED +
+        "EOF\n"
         "systemctl daemon-reload && "
         "systemctl enable --now opendongle.service && "
         "systemctl enable --now opendongle-uplink.service && "
+        "systemctl enable --now opendongle-led.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
     r = subprocess.run(ssh + [remoto],
@@ -192,6 +214,9 @@ No dongle:
 Do celular/PC:
   conecte no Wi-Fi 'OpenDongle' (senha: opendongle)
   abra  http://opendongle.local   (ou http://192.168.100.1)
+
+Os LEDs físicos (vermelho/verde/azul) agora contam o estado do dongle sem
+precisar de SSH: papel USB, modo Wi-Fi (cliente/hotspot), internet e erro.
 
 Observações honestas:
 - opendongle.local depende de mDNS: funciona em Android/Mac/Linux; em
