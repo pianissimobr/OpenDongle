@@ -78,7 +78,7 @@ Para quem quer entender ou usar peça por peça:
 - **`opendongle_autoinstall.py`** — instala o Debian (backup → flash → verificação), com detecção de placa e modo de teste.
 - **`otimizar_dongle.py`** — aplica as otimizações de durabilidade e velocidade (reversível).
 - **`instalar_opendongle.py`** — instala o painel de configuração (motor + CLI + web).
-- **`opendongle/`** — o painel: motor único (`engine`), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`) e o controlador de LEDs (`led`).
+- **`opendongle/`** — o painel: motor único (`engine`), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
 - **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
 - **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
 
@@ -94,6 +94,7 @@ sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
 sudo opendongle wifi --list                         # redes Wi-Fi visíveis
 sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
 sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
+sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
 ```
 
 ---

@@ -12,6 +12,7 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle wifi --list
   sudo opendongle mode-hotspot
   sudo opendongle senha --nova umaSenhaForte
+  sudo opendongle diagnostico
 """
 
 import argparse
@@ -21,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_engine as eng
+import opendongle_diag as diag
 
 
 def precisa_root():
@@ -77,8 +79,19 @@ def main():
     p = sub.add_parser("senha", help="troca a senha de administração")
     p.add_argument("--nova", required=True)
 
+    sub.add_parser("diagnostico",
+                   help="testa áudio, Bluetooth, vídeo USB e modem 4G")
+
     args = ap.parse_args()
     precisa_root()
+
+    if args.cmd == "diagnostico":
+        resultados = diag.rodar_tudo()
+        if args.json:
+            print(json.dumps(resultados, ensure_ascii=False))
+        else:
+            diag.imprimir_relatorio(resultados)
+        sys.exit(0 if all(r["status"] != "falha" for r in resultados) else 1)
 
     if args.cmd == "status":
         res = eng.status()

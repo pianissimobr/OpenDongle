@@ -12,7 +12,7 @@ python3 opendongle_completo.py
 - `instalar_opendongle.py` — instala o painel web + CLI + uplink_guard
 - `setup_estrutura.py` — baixa firmware e loader
 - `install.sh` — dependências do PC
-- `opendongle/` — o painel (engine, cli, web, uplink_guard, led)
+- `opendongle/` — o painel (engine, cli, web, uplink_guard, led, diag, usb-role-autosense.sh)
 
 ## ferramentas/ — utilitários situacionais
 - `restaurar_backup.py` — volta o dongle ao firmware salvo

@@ -9,23 +9,35 @@ Coloca no dongle, via SSH:
   - serviço systemd do painel web (porta 80)
   - serviço systemd do uplink guard (gateway condicional)
   - serviço systemd dos LEDs (papel USB, modo Wi-Fi, internet, áudio)
+  - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
+  - reinicia o dongle no final, pra ativar o usb-role-autosense de vez
+    (ele só decide o papel USB corretamente longe de uma instalação SSH
+    em andamento — ver nota no [2/6])
+  - depois do reboot, espera o dongle voltar e roda um teste geral:
+    serviços ativos, papel USB, avahi, o motor respondendo de fato, e um
+    diagnóstico de hardware (áudio, Bluetooth, vídeo USB, modem 4G) —
+    termina com "Sua instalação está terminada" e a lista do que precisa
+    de atenção manual, se houver
 
 Uso:
   python3 instalar_opendongle.py --ip 192.168.100.1 --senha 1
 """
 
 import argparse
+import json
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent / "opendongle"
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
-        "uplink_guard.py", "opendongle_led.py"]
+        "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
+        "usb-role-autosense.sh"]
 
 UNIT = """[Unit]
 Description=OpenDongle painel web
@@ -59,13 +71,31 @@ WantedBy=multi-user.target
 # host), modo Wi-Fi (cliente/hotspot) e internet sem precisar de SSH.
 UNIT_LED = """[Unit]
 Description=OpenDongle LED (papel USB, modo Wi-Fi, internet e áudio)
-After=network.target NetworkManager.service
+After=network.target NetworkManager.service usb-role-autosense.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_led.py
 Restart=on-failure
 RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# usb-role-autosense.sh: grupos de acesso, Bluetooth, decide papel USB
+# (device/host) e, em host, conecta o 4G plug-and-play (SIM -> APN).
+# Unidade idêntica à testada em bancada (dongle/context.md, seção 10).
+UNIT_USBROLE = """[Unit]
+Description=Ensina o papel USB conforme o contexto de conexao (PC vs externo)
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/usb-role-autosense.sh
+StandardOutput=journal
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -111,7 +141,7 @@ def main():
         print("(sem chave SSH nem sshpass — a senha será pedida)")
         ssh = ["ssh"] + ssh_base + [f"{args.usuario}@{args.ip}"]
 
-    print("== [1/4] Enviando arquivos do painel...")
+    print("== [1/6] Enviando arquivos do painel...")
     # manda os 3 arquivos via tar por stdin (uma conexão)
     import tarfile, io
     buf = io.BytesIO()
@@ -124,13 +154,23 @@ def main():
     if r.returncode != 0:
         sys.exit("Falha no envio (senha errada?).")
 
-    print("== [2/4] Instalando motor, CLI e serviço web (sudo)...")
+    print("== [2/6] Instalando motor, CLI e serviços (sudo)...")
+    # usb-role-autosense.service NÃO sobe com --now de propósito: a própria
+    # instalação está rodando por SSH sobre a rede USB (RNDIS = papel
+    # "device"). Se o script reavaliar o papel USB agora e, por qualquer
+    # instabilidade momentânea, decidir "host", a instalação perde a
+    # conexão no meio do processo (isso já aconteceu em teste de bancada —
+    # ver dongle/context.md). Fica "enabled" e só entra em vigor no
+    # PRÓXIMO boot, quando não há uma instalação em andamento disputando
+    # a mesma interface.
     remoto = (
         "sudo -S bash -c '"
         "mkdir -p /opt/opendongle && "
         "tar xf /tmp/opendongle.tar -C /opt/opendongle && "
         "rm /tmp/opendongle.tar && "
-        "chmod 755 /opt/opendongle/*.py && "
+        "chmod 755 /opt/opendongle/*.py /opt/opendongle/*.sh && "
+        "cp /opt/opendongle/usb-role-autosense.sh /usr/local/bin/usb-role-autosense.sh && "
+        "chmod 755 /usr/local/bin/usb-role-autosense.sh && "
         # CLI acessível como 'opendongle'
         "printf \"#!/bin/sh\\nexec /usr/bin/python3 "
         "/opt/opendongle/opendongle_cli.py \\\"\\$@\\\"\\n\" "
@@ -145,10 +185,14 @@ def main():
         "cat > /etc/systemd/system/opendongle-led.service << \"EOF\"\n"
         + UNIT_LED +
         "EOF\n"
+        "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
+        + UNIT_USBROLE +
+        "EOF\n"
         "systemctl daemon-reload && "
         "systemctl enable --now opendongle.service && "
         "systemctl enable --now opendongle-uplink.service && "
         "systemctl enable --now opendongle-led.service && "
+        "systemctl enable usb-role-autosense.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
     r = subprocess.run(ssh + [remoto],
@@ -160,7 +204,7 @@ def main():
         print(r.stderr.decode(errors="replace")[-400:])
         sys.exit("Serviço web não subiu — veja a saída acima.")
 
-    print("== [3/4] Configurando avahi (opendongle.local)...")
+    print("== [3/6] Configurando avahi (opendongle.local)...")
     avahi = (
         "sudo -S bash -c '"
         # reativa o avahi (o otimizador desliga por RAM; ligamos p/ .local)
@@ -196,7 +240,7 @@ def main():
         print("   ⚠ avahi não ativou — opendongle.local pode não resolver. "
               "Use o IP 192.168.100.1 como alternativa.")
 
-    print("== [4/4] Garantindo hotspot padrão OpenDongle/opendongle...")
+    print("== [4/6] Garantindo hotspot padrão OpenDongle/opendongle...")
     hs = (
         "sudo -S /opt/opendongle/opendongle_cli.py hotspot "
         "--ssid OpenDongle --senha opendongle"
@@ -224,6 +268,104 @@ Observações honestas:
 - Ao trocar nome/senha do hotspot, os clientes caem e precisam
   reconectar (a página avisa isso ao usuário).
 """)
+
+    print("== [5/6] Reiniciando o dongle para ativar o usb-role-autosense...")
+    # dispara o reboot em background, desanexado da sessão SSH: o 'sleep 2'
+    # dá tempo do comando 'ssh' retornar normalmente antes da conexão cair
+    # (sem isso, o subprocess.run ficaria esperando uma resposta que nunca
+    # chega, porque o reboot derruba a rede USB no meio da resposta).
+    reboot = (
+        "sudo -S bash -c "
+        "'nohup sh -c \"sleep 2 && reboot\" >/dev/null 2>&1 & disown'"
+    )
+    try:
+        subprocess.run(ssh + [reboot], input=(args.senha + "\n").encode(),
+                       capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        pass   # esperado se a conexão já tiver caído — o reboot já foi disparado
+
+    print("== [6/6] Esperando o dongle voltar pra rodar o teste geral...")
+    voltou = False
+    prazo = time.time() + 120
+    time.sleep(5)   # dá um respiro antes da 1ª tentativa (a rede cai na hora)
+    while time.time() < prazo:
+        try:
+            socket.create_connection((args.ip, 22), timeout=3).close()
+            voltou = True
+            break
+        except OSError:
+            time.sleep(3)
+
+    if not voltou:
+        print("   ⚠ SSH não voltou em ~2min. Pode ser boot mais lento — "
+              "tente 'sudo opendongle status' manualmente daqui a pouco, "
+              "ou veja /var/log/usb-role-autosense.log pelo console serial "
+              "se o papel USB não tiver resolvido pra 'device'.")
+        sys.exit(1)
+
+    print("   dongle respondeu — rodando checagens:")
+    checagens = [
+        ("serviço painel web",         "systemctl is-active opendongle.service"),
+        ("serviço uplink guard",       "systemctl is-active opendongle-uplink.service"),
+        ("serviço LEDs",               "systemctl is-active opendongle-led.service"),
+        ("serviço usb-role-autosense", "systemctl is-active usb-role-autosense.service"),
+        ("avahi (opendongle.local)",   "systemctl is-active avahi-daemon"),
+        ("papel USB (informativo)",    "cat /sys/class/usb_role/ci_hdrc.0-role-switch/role"),
+    ]
+    problemas = []   # [(nome, detalhe)] — só o que realmente falhou
+    for nome, cmd in checagens:
+        r = subprocess.run(ssh + [cmd], capture_output=True, timeout=15)
+        saida = (r.stdout.decode(errors="replace").strip()
+                 or r.stderr.decode(errors="replace").strip())
+        ok = r.returncode == 0
+        print(f"   {'✅' if ok else '❌'} {nome}: {saida[:80]}")
+        if not ok:
+            problemas.append((nome, saida[:120] or "comando falhou"))
+
+    # teste funcional de verdade: o motor respondendo, não só o serviço "up"
+    r = subprocess.run(
+        ssh + ["sudo -S /opt/opendongle/opendongle_cli.py status --json"],
+        input=(args.senha + "\n").encode(), capture_output=True, timeout=20)
+    try:
+        res = json.loads(r.stdout.decode(errors="replace").strip())
+    except (ValueError, UnicodeDecodeError):
+        res = {}
+    if res.get("ok"):
+        print(f"   ✅ motor (opendongle status): modo={res.get('modo')} "
+              f"internet={res.get('internet')}")
+    else:
+        detalhe = r.stdout.decode(errors="replace").strip()[:120]
+        print(f"   ❌ motor (opendongle status) não respondeu como esperado: {detalhe}")
+        problemas.append(("motor (opendongle status)", detalhe or "sem resposta"))
+
+    print("\n   -- hardware: áudio, Bluetooth, vídeo USB e modem 4G --")
+    r = subprocess.run(
+        ssh + ["sudo -S /opt/opendongle/opendongle_diag.py --json"],
+        input=(args.senha + "\n").encode(), capture_output=True, timeout=40)
+    try:
+        diag_resultados = json.loads(r.stdout.decode(errors="replace").strip())
+    except (ValueError, UnicodeDecodeError):
+        diag_resultados = None
+
+    if diag_resultados is None:
+        detalhe = r.stdout.decode(errors="replace").strip()[:120]
+        print(f"   ❌ diagnóstico de hardware não respondeu: {detalhe}")
+        problemas.append(("diagnóstico de hardware", detalhe or "sem resposta"))
+    else:
+        icone = {"ok": "✅", "falha": "❌", "nao_testavel": "➖"}
+        for item in diag_resultados:
+            print(f"   {icone.get(item['status'], '?')} {item['nome']}: {item['detalhe']}")
+            if item["status"] == "falha":
+                problemas.append((item["nome"], item["detalhe"]))
+
+    print()
+    if not problemas:
+        print("== Sua instalação está terminada. Tudo funcionando. ==")
+    else:
+        print("== Sua instalação está terminada, com ressalvas: ==")
+        for nome, detalhe in problemas:
+            print(f"   ✗ {nome}: {detalhe} — tentar resolver manualmente.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
