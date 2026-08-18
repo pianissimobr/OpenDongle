@@ -173,6 +173,59 @@ replug (sem botão). E o primeiro boot do Debian é o mais lento (ele
 redimensiona o sistema de arquivos e gera chaves): **2 a 4 minutos de
 espera são normais** antes de ele responder em `192.168.100.1`.
 
+### `192.168.100.1` NUNCA responde (nem ping, nem SSH, mesmo esperando bastante)
+
+Diferente do caso acima — aqui não é demora, é que a rede USB
+simplesmente **não existe**. Sintoma: no PC, a interface de rede do
+dongle aparece (`ip link` mostra `usb0`/`enxXXXX`), mas fica `DOWN`,
+sem IP, e o ARP para `192.168.100.1` fica `INCOMPLETE` pra sempre.
+
+**Por quê:** a rede USB do dongle é uma bridge (`br0`, IP
+`192.168.100.1`) montada pelo `ifupdown2` a partir de
+`/etc/network/interfaces`. Em imagens Debian 13 (trixie) com Python
+**3.12 ou mais novo**, o `ifupdown2` (pacote `3.0.0-1.1`) crasha
+**sempre**, em todo boot, com:
+```
+error: main exception: 'RawConfigParser' object has no attribute 'readfp'
+```
+`readfp()` foi removido do `configparser` do Python no 3.12 (existia
+desde sempre como sinônimo de `read_file()`, só que deprecado). Como o
+`ifupdown2` crasha antes de sequer ler o arquivo de interfaces, a
+bridge `br0` nunca é criada — em nenhum boot, não é uma corrida de
+inicialização. **E como é justamente essa rede que todo o fluxo do
+OpenDongle usa pra fazer a instalação via SSH, isso te deixa sem
+nenhum jeito de alcançar o dongle por aí.**
+
+**Solução automática:** a partir desta versão, `instalar_opendongle.py`
+já detecta e corrige isso sozinho (idempotente — só mexe se o bug
+estiver presente). Mas se você ainda não tem acesso nenhum ao dongle
+(nem SSH, nem WiFi já pareado), precisa entrar pelo **console serial**
+pra aplicar o patch manualmente uma primeira vez:
+```
+# no PC, com o dongle plugado (aparece como /dev/ttyACM0):
+sudo screen /dev/ttyACM0 115200
+# dentro do dongle (já cai direto num shell root pelo console serial):
+sed -i 's/parser\.readfp(configFP)/parser.read_file(configFP)/' \
+    /usr/share/ifupdown2/ifupdown/main.py
+reboot
+```
+Depois do reboot, `192.168.100.1` passa a responder normalmente, e o
+resto do fluxo do OpenDongle (que já carrega a correção) mantém
+funcionando sozinho dali em diante.
+
+**Achado relacionado — `usb0` vs `usb1`:** o `/etc/network/interfaces`
+genérico da imagem bridga `usb0` **e** `usb1`
+(`bridge-ports usb0 usb1`). Isso não são duas portas físicas — é o
+mesmo conector USB expondo, em tese, duas *funções de gadget*
+diferentes ao mesmo tempo (RNDIS, mais compatível com Windows, e ECM,
+mais compatível com Mac/Linux antigos), cada uma virando sua própria
+interface de rede virtual no dongle. Em boards com só RNDIS habilitado
+(`ENABLE_ECM=0` e `ENABLE_NCM=0` em `/etc/msm8916-usb-gadget.conf` —
+o caso mais comum), `usb1` nunca existe de verdade; o
+`instalar_opendongle.py` corrige essa linha pra `bridge-ports usb0`
+quando detecta esse cenário. Isso é cosmético (não bloqueia nada — a
+bridge sobe igual só com `usb0`), mas evita um aviso confuso nos logs.
+
 ---
 
 ## <a name="ssh"></a>🔑 SSH pedindo senha o tempo todo

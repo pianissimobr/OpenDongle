@@ -69,9 +69,17 @@ WantedBy=multi-user.target
 
 # Serviço dos LEDs: red:power/green:wlan/blue:wan contam papel USB (device/
 # host), modo Wi-Fi (cliente/hotspot) e internet sem precisar de SSH.
+# NÃO ordenar com "After=usb-role-autosense.service" aqui: esse serviço tem
+# "After=multi-user.target" (proposital, definido em bancada — ver
+# UNIT_USBROLE), e como opendongle-led.service é WantedBy=multi-user.target
+# (logo, Before= implícito), isso fecha um ciclo de dependência que o
+# systemd resolve descartando o job do LED silenciosamente em todo boot
+# (visto ao vivo: "Found ordering cycle on opendongle-led.service/start").
+# O script já faz polling a cada poucos segundos e se autocorrige sozinho,
+# não precisa de ordem estrita de boot.
 UNIT_LED = """[Unit]
 Description=OpenDongle LED (papel USB, modo Wi-Fi, internet e áudio)
-After=network.target NetworkManager.service usb-role-autosense.service
+After=network.target NetworkManager.service
 
 [Service]
 Type=simple
@@ -171,6 +179,28 @@ def main():
         "chmod 755 /opt/opendongle/*.py /opt/opendongle/*.sh && "
         "cp /opt/opendongle/usb-role-autosense.sh /usr/local/bin/usb-role-autosense.sh && "
         "chmod 755 /usr/local/bin/usb-role-autosense.sh && "
+        # Corrige bug conhecido do ifupdown2 em imagens Debian 13/Python
+        # 3.12+: RawConfigParser.readfp foi removido do Python, ifupdown2
+        # crasha ao ler sua config e a bridge br0 (192.168.100.1, usada
+        # por ESTE PRÓPRIO SSH) nunca sobe sozinha em NENHUM boot. Sem
+        # isso, a rede USB simplesmente não existe até alguém consertar
+        # na mão pelo console serial (foi assim que achamos o bug).
+        "f=/usr/share/ifupdown2/ifupdown/main.py; "
+        "if [ -f \"$f\" ] && grep -q \"parser\\.readfp(configFP)\" \"$f\"; then "
+        "sed -i \"s/parser\\.readfp(configFP)/parser.read_file(configFP)/\" \"$f\"; "
+        "rm -f /usr/share/ifupdown2/ifupdown/__pycache__/*.pyc 2>/dev/null; "
+        "echo \"fix: ifupdown2 readfp corrigido (Debian 13/Python 3.12+)\"; "
+        "fi; "
+        # bridge-ports genérico da imagem assume usb0+usb1 (RNDIS+ECM),
+        # mas boards com só RNDIS habilitado (ECM/NCM=0) nunca têm usb1 —
+        # ajusta só quando essa condição bate, pra não mexer em boards
+        # que realmente usam os dois.
+        "gc=/etc/msm8916-usb-gadget.conf; ni=/etc/network/interfaces; "
+        "if [ -f \"$gc\" ] && [ -f \"$ni\" ] && grep -q \"^ENABLE_ECM=0\" \"$gc\" "
+        "&& grep -q \"^ENABLE_NCM=0\" \"$gc\" && grep -q \"bridge-ports usb0 usb1\" \"$ni\"; then "
+        "sed -i \"s/bridge-ports usb0 usb1/bridge-ports usb0/\" \"$ni\"; "
+        "echo \"fix: bridge-ports ajustado pra usb0 (ECM/NCM desligados nesse board)\"; "
+        "fi && "
         # CLI acessível como 'opendongle'
         "printf \"#!/bin/sh\\nexec /usr/bin/python3 "
         "/opt/opendongle/opendongle_cli.py \\\"\\$@\\\"\\n\" "
@@ -324,7 +354,7 @@ Observações honestas:
 
     # teste funcional de verdade: o motor respondendo, não só o serviço "up"
     r = subprocess.run(
-        ssh + ["sudo -S /opt/opendongle/opendongle_cli.py status --json"],
+        ssh + ["sudo -S /opt/opendongle/opendongle_cli.py --json status"],
         input=(args.senha + "\n").encode(), capture_output=True, timeout=20)
     try:
         res = json.loads(r.stdout.decode(errors="replace").strip())
