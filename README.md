@@ -99,7 +99,7 @@ sudo opendongle diagnostico                          # testa áudio, Bluetooth, 
 
 - **Chip:** Qualcomm MSM8916 (Snapdragon 410), quad-core ARM64
 - **RAM:** ~382 MB (por isso as otimizações importam tanto)
-- **Placas testadas:** UZ801 e variantes. O instalador detecta ou testa a placa automaticamente
+
 ---
 
 ## ⚠️ Avisos
