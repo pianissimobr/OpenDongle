@@ -64,6 +64,8 @@ O assistente pergunta se o Debian já está instalado, conduz a instalação, ot
 
 **3. Use.** Conecte no Wi-Fi do dongle, abra `opendongle.local`, e escolha o que ele vai ser.
 
+> **`opendongle.local` não abre?** Em alguns Windows o mDNS falha. Rode `python3 ferramentas/opendongle_localizar.py` no PC — ele acha o IP do dongle na rede local sozinho e já abre o painel, sem precisar de USB nem entrar no roteador.
+
 ---
 
 ## 🛠️ Os scripts
@@ -74,9 +76,10 @@ Para quem quer entender ou usar peça por peça:
 - **`opendongle_autoinstall.py`** — instala o Debian (backup → flash → verificação), com detecção de placa e modo de teste.
 - **`otimizar_dongle.py`** — aplica as otimizações de durabilidade e velocidade (reversível).
 - **`instalar_opendongle.py`** — instala o painel de configuração (motor + CLI + web).
-- **`opendongle/`** — o painel: motor único (`engine`), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
+- **`opendongle/`** — o painel: motor único (`engine`), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
 - **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
 - **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
+- **`opendongle_localizar.py`** — roda no PC; acha o IP do dongle na rede local quando `opendongle.local` não resolve (sem depender de USB nem de entrar no roteador).
 
 ---
 

@@ -12,12 +12,15 @@ python3 opendongle_completo.py
 - `instalar_opendongle.py` — instala o painel web + CLI + uplink_guard
 - `setup_estrutura.py` — baixa firmware e loader
 - `install.sh` — dependências do PC
-- `opendongle/` — o painel (engine, cli, web, uplink_guard, led, diag, usb-role-autosense.sh)
+- `opendongle/` — o painel (engine, cli, web, uplink_guard, led, diag, discovery, usb-role-autosense.sh)
 
 ## ferramentas/ — utilitários situacionais
 - `restaurar_backup.py` — volta o dongle ao firmware salvo
 - `restaurar_calibracao_ssh.py` — restaura calibração do modem via SSH
 - `fable_detector.py` — investiga o chip de um aparelho desconhecido (EDL)
+- `opendongle_localizar.py` — acha o IP do dongle na rede local quando o
+  mDNS (opendongle.local) não resolve; roda no PC, sem depender de USB
+  nem de entrar no roteador
 
 ## _legado/ — versão antiga arquivada (não usar; plano B)
 - `instalar_portal.py` + `portal/` — o portal cativo antigo, substituído

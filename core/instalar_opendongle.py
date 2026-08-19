@@ -9,6 +9,8 @@ Coloca no dongle, via SSH:
   - serviço systemd do painel web (porta 80)
   - serviço systemd do uplink guard (gateway condicional)
   - serviço systemd dos LEDs (papel USB, modo Wi-Fi, internet, áudio)
+  - serviço systemd de descoberta na rede (responde probe UDP com o IP,
+    pra ferramentas/opendongle_localizar.py achar o dongle sem mDNS)
   - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
@@ -37,7 +39,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent / "opendongle"
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
-        "usb-role-autosense.sh"]
+        "opendongle_discovery.py", "usb-role-autosense.sh"]
 
 UNIT = """[Unit]
 Description=OpenDongle painel web
@@ -104,6 +106,23 @@ Type=oneshot
 ExecStart=/usr/local/bin/usb-role-autosense.sh
 StandardOutput=journal
 RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# Serviço de descoberta: responde a um probe UDP de broadcast com o próprio
+# hostname, pra opendongle_localizar.py (roda no PC) achar o IP quando o
+# mDNS não resolve (alguns Windows) sem depender de USB nem do roteador.
+UNIT_DISCOVERY = """[Unit]
+Description=OpenDongle descoberta na rede local (responde probe UDP)
+After=network.target NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_discovery.py
+Restart=on-failure
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -218,10 +237,14 @@ def main():
         "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
         + UNIT_USBROLE +
         "EOF\n"
+        "cat > /etc/systemd/system/opendongle-discovery.service << \"EOF\"\n"
+        + UNIT_DISCOVERY +
+        "EOF\n"
         "systemctl daemon-reload && "
         "systemctl enable --now opendongle.service && "
         "systemctl enable --now opendongle-uplink.service && "
         "systemctl enable --now opendongle-led.service && "
+        "systemctl enable --now opendongle-discovery.service && "
         "systemctl enable usb-role-autosense.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
@@ -295,6 +318,8 @@ precisar de SSH: papel USB, modo Wi-Fi (cliente/hotspot), internet e erro.
 Observações honestas:
 - opendongle.local depende de mDNS: funciona em Android/Mac/Linux; em
   alguns Windows falha — por isso a tela sempre mostra o IP como plano B.
+  Se nem isso resolver, rode ferramentas/opendongle_localizar.py no PC:
+  ele acha o IP do dongle sozinho, sem depender de USB nem do roteador.
 - Ao trocar nome/senha do hotspot, os clientes caem e precisam
   reconectar (a página avisa isso ao usuário).
 """)
@@ -338,6 +363,7 @@ Observações honestas:
         ("serviço painel web",         "systemctl is-active opendongle.service"),
         ("serviço uplink guard",       "systemctl is-active opendongle-uplink.service"),
         ("serviço LEDs",               "systemctl is-active opendongle-led.service"),
+        ("serviço descoberta na rede", "systemctl is-active opendongle-discovery.service"),
         ("serviço usb-role-autosense", "systemctl is-active usb-role-autosense.service"),
         ("avahi (opendongle.local)",   "systemctl is-active avahi-daemon"),
         ("papel USB (informativo)",    "cat /sys/class/usb_role/ci_hdrc.0-role-switch/role"),
