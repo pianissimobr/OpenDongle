@@ -6,11 +6,12 @@ instalar_opendongle.py — instala o painel OpenDongle no dongle (roda no PC)
 Coloca no dongle, via SSH:
   - motor único + CLI + painel web (em /opt/opendongle)
   - comando `opendongle` em /usr/local/bin (a CLI)
-  - um serviço systemd só (opendongle.service -> opendongled.py), com o
-    painel web (porta 80), o uplink guard (gateway condicional), os LEDs
-    (papel USB, modo Wi-Fi, internet, áudio) e a descoberta na rede
-    (responde probe UDP pra ferramentas/opendongle_localizar.py) como
-    threads do mesmo processo Python — economiza RAM
+  - opendongle.service (opendongled.py), sempre ligado: uplink guard
+    (gateway condicional), LEDs, descoberta na rede (probe UDP pra
+    ferramentas/opendongle_localizar.py) e o repassador da porta 80, como
+    threads do mesmo processo Python
+  - painel web sob demanda (opendongle-web.socket/.service): sobe no
+    primeiro acesso ("Carregando painel…") e dorme depois de 5 min ocioso
   - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
   - módulos do Bluetooth e LED triggers carregados em todo boot, e o
     bluetooth.service (bluetoothd) desmascarado e ativo
@@ -42,21 +43,24 @@ import sys
 import time
 from pathlib import Path
 
+from otimizar_dongle import EARLYOOM_CONF
+
 BASE = Path(__file__).resolve().parent / "opendongle"
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
         "opendongle_discovery.py", "opendongle_config.py",
-        "opendongle_apply.py", "opendongled.py", "usb-role-autosense.sh"]
+        "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
+        "usb-role-autosense.sh"]
 
-# Um processo só pra painel, uplink guard, LEDs e descoberta (opendongled).
-# NÃO ordenar com "After=usb-role-autosense.service": esse serviço tem
+# Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o
+# repassador da porta 80. NÃO ordenar com "After=usb-role-autosense.service": esse serviço tem
 # "After=multi-user.target" (proposital — ver UNIT_USBROLE), e como este é
 # WantedBy=multi-user.target (Before= implícito), fecha um ciclo de
 # dependência que o systemd resolve descartando o job em todo boot (visto
 # ao vivo com o antigo opendongle-led.service). Os laços fazem polling e se
 # corrigem sozinhos, não precisam de ordem estrita de boot.
 UNIT = """[Unit]
-Description=OpenDongle (painel web, uplink guard, LEDs e descoberta)
+Description=OpenDongle (uplink guard, LEDs, descoberta e porta 80)
 After=network.target NetworkManager.service
 
 [Service]
@@ -66,6 +70,29 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+# Painel web sob demanda: o systemd segura o socket unix (custo zero) e sobe
+# o painel no primeiro acesso vindo do repassador da porta 80; o painel se
+# encerra sozinho depois de 5 min ocioso.
+UNIT_WEB_SOCKET = """[Unit]
+Description=OpenDongle painel web (socket, ativa sob demanda)
+
+[Socket]
+ListenStream=/run/opendongle/web.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target
+"""
+
+UNIT_WEB = """[Unit]
+Description=OpenDongle painel web (sobe no acesso, dorme quando ocioso)
+Requires=opendongle-web.socket
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_web.py --ativado
+ExecStopPost=/bin/rm -f /run/opendongle/web-pronto
 """
 
 # Units de versões antigas, quando cada parte era um processo separado.
@@ -209,6 +236,12 @@ def main():
         "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
         + UNIT_USBROLE +
         "EOF\n"
+        "cat > /etc/systemd/system/opendongle-web.socket << \"EOF\"\n"
+        + UNIT_WEB_SOCKET +
+        "EOF\n"
+        "cat > /etc/systemd/system/opendongle-web.service << \"EOF\"\n"
+        + UNIT_WEB +
+        "EOF\n"
         "systemctl disable --now " + " ".join(UNITS_ANTIGAS) + " >/dev/null 2>&1; "
         "rm -f " + " ".join(f"/etc/systemd/system/{u}" for u in UNITS_ANTIGAS) + "\n"
         "cat > /etc/modules-load.d/opendongle.conf << \"EOF\"\n"
@@ -229,6 +262,19 @@ def main():
         "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
         "hostapd iw >/dev/null 2>&1 && apt-get clean "
         "|| echo \"aviso: hostapd/iw nao instalados (sem internet?)\"\n"
+        # Memória: zram sem earlyoom trava o dongle (ping responde, SSH e
+        # console não — visto ao vivo). Se há zram, o earlyoom é garantido;
+        # sem conseguir o earlyoom, o zram é desligado em vez de arriscar.
+        "if systemctl is-active -q zramswap || systemctl is-enabled -q zramswap 2>/dev/null; then "
+        "dpkg -s earlyoom >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y "
+        "--no-install-recommends earlyoom >/dev/null 2>&1; "
+        "if dpkg -s earlyoom >/dev/null 2>&1; then "
+        "cat > /etc/default/earlyoom << \"EOF\"\n" + EARLYOOM_CONF + "EOF\n"
+        "systemctl enable earlyoom >/dev/null 2>&1; systemctl restart earlyoom; fi; "
+        "if ! systemctl is-active -q earlyoom; then "
+        "systemctl disable --now zramswap >/dev/null 2>&1; "
+        "echo \"aviso: earlyoom indisponivel (sem internet?): zram desligado pra nao travar\"; fi; "
+        "fi\n"
         # dongle não tem tela: o login no tty1 só ocupa RAM
         "systemctl mask --now getty@tty1.service >/dev/null 2>&1\n"
         "python3 /opt/opendongle/opendongle_cli.py config aplicar "
@@ -236,6 +282,8 @@ def main():
         "systemctl daemon-reload && "
         # restart (não só --now): numa reinstalação o serviço já está no ar
         # com o código antigo carregado
+        "systemctl enable --now opendongle-web.socket && "
+        "systemctl stop opendongle-web.service >/dev/null 2>&1; "
         "systemctl enable opendongle.service && "
         "systemctl restart opendongle.service && "
         "systemctl enable usb-role-autosense.service && "
@@ -409,8 +457,18 @@ Observações honestas:
         pass
     print("   dongle respondeu — rodando checagens:")
     checagens = [
-        ("serviço OpenDongle (painel, uplink, LEDs, descoberta)",
+        ("serviço OpenDongle (uplink, LEDs, descoberta, porta 80)",
                                        "systemctl is-active opendongle.service"),
+        ("painel web sob demanda (socket)", "systemctl is-active opendongle-web.socket"),
+        # acorda o painel pela porta 80 como um navegador faria e confere que,
+        # depois do "Carregando painel…", a página de verdade responde
+        ("painel acorda pela porta 80",
+         # logo após o boot a 1ª partida do painel disputa CPU/disco com o
+         # resto do sistema: visto ao vivo passar de 15 s, então até 60 s
+         "curl -s -o /dev/null -H 'Accept: text/html' http://127.0.0.1/status; "
+         "for i in $(seq 120); do [ \"$(curl -s http://127.0.0.1/__estado)\" = 1 ] "
+         "&& break; sleep 0.5; done; curl -s -H 'Accept: text/html' "
+         "http://127.0.0.1/status | grep -q 'Saúde do sistema' && echo acordou"),
         ("serviço usb-role-autosense", "systemctl is-active usb-role-autosense.service"),
         ("avahi (opendongle.local)",   "systemctl is-active avahi-daemon"),
         ("papel USB (informativo)",    "cat /sys/class/usb_role/ci_hdrc.0-role-switch/role"),
@@ -421,7 +479,7 @@ Observações honestas:
     ]
     problemas = []   # [(nome, detalhe)] — só o que realmente falhou
     for nome, cmd in checagens:
-        r = subprocess.run(ssh + [cmd], capture_output=True, timeout=15)
+        r = subprocess.run(ssh + [cmd], capture_output=True, timeout=90)
         saida = (r.stdout.decode(errors="replace").strip()
                  or r.stderr.decode(errors="replace").strip())
         ok = r.returncode == 0

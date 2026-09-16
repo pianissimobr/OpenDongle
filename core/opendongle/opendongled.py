@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-opendongled.py — todos os serviços do OpenDongle num processo Python só
-=========================================================================
-Antes eram 4 serviços (painel web, uplink guard, LEDs, descoberta), cada
-um com seu próprio interpretador Python (~29 MB somados, medido em PSS).
-Aqui eles viram threads do mesmo processo e compartilham o cache de
-"tem internet?" do engine — o laço do uplink renova, LED e painel só leem.
+opendongled.py — o que precisa ficar sempre ligado, num processo Python só
+============================================================================
+Threads do mesmo processo: uplink guard, LEDs, descoberta na rede e o
+repassador da porta 80. O painel web NÃO mora aqui: ele é um serviço à
+parte (opendongle-web), ativado pelo systemd no primeiro acesso e encerrado
+quando fica ocioso — o repassador mostra "Carregando painel…" enquanto ele
+sobe. Assim o http.server e as telas não ocupam RAM com ninguém usando.
 
 Cada thread tem um supervisor: se o laço morrer por exceção, ele registra
-no journal e reinicia só aquela parte (o que antes o Restart= de cada
-unit do systemd fazia).
+no journal e reinicia só aquela parte.
 """
 
 import os
@@ -22,7 +22,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_discovery
 import opendongle_led
-import opendongle_web
+import opendongle_proxy
 import uplink_guard
 
 ESPERA_REINICIO = 5   # segundos antes de reiniciar um laço que morreu
@@ -47,9 +47,9 @@ def main():
                        ("descoberta", opendongle_discovery.laco)):
         threading.Thread(target=_supervisionar, args=(nome, laco),
                          name=nome, daemon=True).start()
-    # painel na thread principal: se ele cair, o processo sai e o systemd
+    # porta 80 na thread principal: se ela cair, o processo sai e o systemd
     # (Restart=always) reinicia tudo
-    opendongle_web.servir()
+    opendongle_proxy.laco()
 
 
 if __name__ == "__main__":

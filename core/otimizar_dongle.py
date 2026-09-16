@@ -38,6 +38,13 @@ USUARIO = "user"
 SENHA = "1"
 TAG = "# TARSILA-OPT"   # marca nossas linhas para idempotência/reversão
 
+# -s 100: com zram, a RAM disponível é o único gatilho confiável. Os
+# essenciais (rede, SSH, modem) nunca são escolhidos. Também usado pelo
+# instalar_opendongle.py, que garante o earlyoom quando o zram já existe.
+EARLYOOM_CONF = """# OpenDongle: com zram o padrao (-m 10 -s 10) quase nunca age a tempo.
+EARLYOOM_ARGS="-m 8 -s 100 -r 3600 --avoid ^(systemd|systemd-.+|sshd|sshd-session|dnsmasq|hostapd|wpa_supplicant|rmtfs|qrtr-ns|dbus-daemon)$"
+"""
+
 
 # ------------------------------------------------------------- SSH helpers
 SSH_BASE = ["-o", "StrictHostKeyChecking=no",
@@ -144,13 +151,32 @@ def montar_etapas():
         "mount -o remount / 2>/dev/null || true",
     ))
 
-    # 3. zram — swap comprimido na RAM. Em 382MB com quad-core ocioso,
+    # 3. earlyoom ANTES do zram — mata o maior consumidor antes do sistema
+    #    travar. Com zram, o padrão (-m 10 -s 10) quase nunca age: o swap
+    #    "livre" demora a acabar e o dongle trava antes (ping responde, SSH
+    #    e console não — visto ao vivo num dongle sem earlyoom).
+    etapas.append((
+        "earlyoom (mata processo certo antes de travar)",
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+        "earlyoom >/dev/null 2>&1; "
+        f"cat > /etc/default/earlyoom << \"EOF\"\n{EARLYOOM_CONF}EOF\n"
+        "systemctl enable earlyoom >/dev/null 2>&1; "
+        "systemctl restart earlyoom 2>/dev/null; "
+        "systemctl is-active -q earlyoom",
+        "systemctl disable --now earlyoom >/dev/null 2>&1; "
+        "apt-get purge -y earlyoom >/dev/null 2>&1 || true",
+    ))
+
+    # 4. zram — swap comprimido na RAM. Em 382MB com quad-core ocioso,
     #    trocamos CPU (abundante) por RAM efetiva (escassa): PERCENT=150.
     #    ~573MB de swap comprimido; com zstd (~2.5:1) custa ~230MB de RAM
-    #    física quando cheio, e o earlyoom (etapa 5) é a rede de segurança
-    #    contra thrashing. zram-tools é o pacote Debian.
+    #    física quando cheio. SÓ liga se o earlyoom (etapa 3) estiver ativo:
+    #    zram sem earlyoom é exatamente o que trava o dongle.
     etapas.append((
-        "zram (swap comprimido, 150% da RAM — CPU sobra, RAM falta)",
+        "zram (swap comprimido, 150% da RAM — só com earlyoom ativo)",
+        "if ! systemctl is-active -q earlyoom; then "
+        "echo 'zram NAO ligado: earlyoom nao esta ativo (sem internet?)' >&2; "
+        "systemctl disable --now zramswap >/dev/null 2>&1; exit 1; fi; "
         "DEBIAN_FRONTEND=noninteractive apt-get install -y zram-tools "
         ">/dev/null 2>&1; "
         "printf 'ALGO=zstd\\nPERCENT=150\\nPRIORITY=100\\n%s\\n' "
@@ -161,7 +187,7 @@ def montar_etapas():
         "apt-get purge -y zram-tools >/dev/null 2>&1 || true",
     ))
 
-    # 4. sysctl calibrado para zram (swappiness ALTO é bom: swap é RAM)
+    # 5. sysctl calibrado para zram (swappiness ALTO é bom: swap é RAM)
     etapas.append((
         "sysctl para zram (swappiness=100, dirty ratios baixos)",
         "printf '%s\\nvm.swappiness=100\\n"
@@ -171,17 +197,6 @@ def montar_etapas():
         f"'{TAG}' > /etc/sysctl.d/99-tarsila.conf && "
         "sysctl -p /etc/sysctl.d/99-tarsila.conf >/dev/null",
         "rm -f /etc/sysctl.d/99-tarsila.conf",
-    ))
-
-    # 5. earlyoom — em vez de o sistema congelar sob pressão de RAM,
-    #    mata o maior vilão e segue vivo. Essencial em 382MB.
-    etapas.append((
-        "earlyoom (mata processo certo antes de travar)",
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y earlyoom "
-        ">/dev/null 2>&1 && "
-        "systemctl enable --now earlyoom >/dev/null 2>&1 || true",
-        "systemctl disable --now earlyoom >/dev/null 2>&1; "
-        "apt-get purge -y earlyoom >/dev/null 2>&1 || true",
     ))
 
     # 6. Desligar serviços inúteis num dongle headless (libera RAM/escrita).

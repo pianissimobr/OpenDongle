@@ -79,12 +79,25 @@ def interfaces_uplink():
     return ifaces
 
 
+ESTADO_RUN = "/run/opendongle/estado.json"
+
+
 def tem_internet(max_idade=20):
     """True se sai pra internet por alguma interface que não seja a LAN.
-    Reaproveita o último resultado se tiver menos de 'max_idade' segundos."""
+    Reaproveita o último resultado se tiver menos de 'max_idade' segundos:
+    da memória (mesmo processo) ou de /run (o laço do uplink, no opendongled,
+    grava lá; o painel web, que dorme e acorda, só lê)."""
     agora = time.monotonic()
     if _INTERNET["quando"] and agora - _INTERNET["quando"] < max_idade:
         return _INTERNET["valor"]
+    if max_idade > 0:
+        try:
+            with open(ESTADO_RUN) as f:
+                estado = json.load(f)
+            if time.time() - estado["quando"] < max(max_idade, 30):
+                return bool(estado["internet"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     valor = False
     for iface in interfaces_uplink():
         for host in HOSTS_TESTE:
@@ -96,6 +109,13 @@ def tem_internet(max_idade=20):
         if valor:
             break
     _INTERNET.update(valor=valor, quando=time.monotonic())
+    try:
+        os.makedirs(os.path.dirname(ESTADO_RUN), exist_ok=True)
+        with open(ESTADO_RUN + ".tmp", "w") as f:
+            json.dump({"internet": valor, "quando": time.time()}, f)
+        os.replace(ESTADO_RUN + ".tmp", ESTADO_RUN)
+    except OSError:
+        pass   # sem root (teste no PC): segue só com o cache em memória
     return valor
 
 

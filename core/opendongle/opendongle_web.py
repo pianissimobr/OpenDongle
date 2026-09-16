@@ -17,13 +17,18 @@ Autenticação: as ações de mudança exigem login com a senha de admin
 (a mesma do sistema). Leitura de status é livre na rede local.
 """
 
+import base64
+import hashlib
+import hmac
 import html
 import ipaddress
 import json
 import os
 import secrets
+import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,12 +37,83 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_engine as eng
 import opendongle_diag as diag
 
-SESSOES = set()
-# resultado do último diagnóstico de hardware (nome_teste -> {status,
-# detalhe, quando}) — cache em memória, mesmo espírito de SESSOES: não
-# precisa sobreviver a um restart do serviço.
-ULTIMO_DIAG = {}
-DETECCAO = ("/generate_204", "/gen_204", "/hotspot-detect.html",
+# O painel dorme quando ocioso (processo encerra): nada de estado só em
+# memória. Sessão = cookie assinado; diagnóstico = arquivo em /run (tmpfs).
+CHAVE_SESSAO = "/etc/opendongle/sessao.key"
+VALIDADE_SESSAO = 12 * 3600
+DIAG_RUN = "/run/opendongle/diagnostico.json"
+FLAG_PRONTO = "/run/opendongle/web-pronto"
+OCIOSO = int(os.environ.get("OPENDONGLE_WEB_OCIOSO", "300"))   # segundos
+
+
+class _CacheDiag(dict):
+    """Último diagnóstico por teste; sobrevive ao painel dormir (não ao
+    reboot, e nem precisa)."""
+
+    def __init__(self, caminho):
+        super().__init__()
+        self._caminho = caminho
+        try:
+            with open(caminho) as f:
+                self.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+    def __setitem__(self, chave, valor):
+        super().__setitem__(chave, valor)
+        try:
+            os.makedirs(os.path.dirname(self._caminho), exist_ok=True)
+            with open(self._caminho, "w") as f:
+                json.dump(dict(self), f, ensure_ascii=False)
+        except OSError:
+            pass
+
+
+ULTIMO_DIAG = _CacheDiag(DIAG_RUN)
+
+
+def _chave(renovar=False):
+    if not renovar:
+        try:
+            with open(CHAVE_SESSAO, "rb") as f:
+                chave = f.read()
+            if len(chave) >= 32:
+                return chave
+        except OSError:
+            pass
+    chave = secrets.token_bytes(32)
+    os.makedirs(os.path.dirname(CHAVE_SESSAO), mode=0o700, exist_ok=True)
+    fd = os.open(CHAVE_SESSAO + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(chave)
+    os.replace(CHAVE_SESSAO + ".tmp", CHAVE_SESSAO)
+    return chave
+
+
+def _nova_sessao():
+    carga = f"{int(time.time()) + VALIDADE_SESSAO}.{secrets.token_urlsafe(9)}".encode()
+    assinatura = hmac.new(_chave(), carga, hashlib.sha256).digest()
+    return (base64.urlsafe_b64encode(carga).decode().rstrip("=") + "." +
+            base64.urlsafe_b64encode(assinatura).decode().rstrip("="))
+
+
+def _sessao_valida(token):
+    try:
+        carga_b64, assin_b64 = token.split(".", 1)
+        carga = base64.urlsafe_b64decode(carga_b64 + "=" * (-len(carga_b64) % 4))
+        assinatura = base64.urlsafe_b64decode(assin_b64 + "=" * (-len(assin_b64) % 4))
+        esperada = hmac.new(_chave(), carga, hashlib.sha256).digest()
+        return (hmac.compare_digest(assinatura, esperada)
+                and int(carga.split(b".", 1)[0]) > time.time())
+    except (ValueError, TypeError):
+        return False
+
+
+def _cookie_sessao():
+    return f"s={_nova_sessao()}; Path=/; HttpOnly; SameSite=Strict; Max-Age={VALIDADE_SESSAO}"
+
+
+DETECCAO =("/generate_204", "/gen_204", "/hotspot-detect.html",
             "/ncsi.txt", "/connecttest.txt", "/canonical.html")
 
 ESTILO = """<style>
@@ -79,7 +155,18 @@ def page(corpo, titulo="OpenDongle"):
     return (f"<!doctype html><html lang='pt-br'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,"
             f"initial-scale=1'><title>{titulo}</title>{ESTILO}</head>"
-            f"<body><div class='wrap'>{corpo}</div></body></html>").encode()
+            f"<body><div class='wrap'>{corpo}</div>{SCRIPT_ENVIO}</body></html>").encode()
+
+
+# Ao enviar um formulário, a resposta pode demorar (aplicar config, acordar
+# o painel): avisa na hora em vez de parecer travado.
+SCRIPT_ENVIO = """<div id='carregando' style='display:none;position:fixed;inset:0;
+ background:rgba(11,18,32,.7);color:#fff;align-items:center;justify-content:center;
+ font:600 1.1em system-ui,sans-serif;z-index:9'>Carregando…</div>
+<script>document.addEventListener('submit',function(){
+ document.getElementById('carregando').style.display='flex'});
+window.addEventListener('pageshow',function(){
+ document.getElementById('carregando').style.display='none'});</script>"""
 
 
 def msg(txt, tipo="ok"):
@@ -850,7 +937,7 @@ class Painel(BaseHTTPRequestHandler):
 
     def _logado(self):
         c = self.headers.get("Cookie", "")
-        return any(x.strip().removeprefix("s=") in SESSOES
+        return any(_sessao_valida(x.strip().removeprefix("s="))
                    for x in c.split(";") if x.strip().startswith("s="))
 
     def _form(self):
@@ -922,9 +1009,7 @@ class Painel(BaseHTTPRequestHandler):
             # simplificado: a troca real de senha exige root de qualquer
             # forma. Para o login do painel, conferimos contra /etc/shadow.
             if _checa_admin(f.get("senha", "")):
-                tok = secrets.token_urlsafe(24)
-                SESSOES.add(tok)
-                return self._redir("/config", f"s={tok}; Path=/; HttpOnly; SameSite=Strict")
+                return self._redir("/config", _cookie_sessao())
             return self._send(tela_config(False, "Senha incorreta."))
         if path == "/wifi":
             # aceita o SSID digitado manualmente OU o escolhido na lista
@@ -995,8 +1080,12 @@ class Painel(BaseHTTPRequestHandler):
                 "Hotspot ativado." if r["ok"] else r["erro"]))
         if path == "/set-password":
             r = eng.set_password(f.get("senha", ""))
-            return self._send(tela_config(True,
-                (r.get("aviso") if r["ok"] else r["erro"])))
+            if not r["ok"]:
+                return self._send(tela_config(True, r["erro"]))
+            # senha nova derruba todas as outras sessões; esta ganha uma nova
+            _chave(renovar=True)
+            return self._send(tela_config(True, r.get("aviso")),
+                              extra={"Set-Cookie": _cookie_sessao()})
         if path == "/bluetooth-power":
             r = eng.bluetooth_power(f.get("ligar") == "1")
             return self._send(tela_bluetooth(True,
@@ -1098,5 +1187,47 @@ def servir():
     ThreadingHTTPServer(("0.0.0.0", 80), Painel).serve_forever()
 
 
+class _PainelUnix(ThreadingHTTPServer):
+    """Servidor no socket unix que o systemd entrega (fd 3). Encerra sozinho
+    depois de OCIOSO segundos sem requisição; o systemd sobe de novo no
+    próximo acesso."""
+    daemon_threads = True
+
+    def __init__(self, sock):
+        super().__init__(None, Painel, bind_and_activate=False)
+        self.socket.close()   # o construtor cria um socket TCP que não usamos
+        self.socket = sock
+        self.ultimo = time.monotonic()
+
+    def get_request(self):
+        conexao, _ = self.socket.accept()
+        self.ultimo = time.monotonic()
+        return conexao, ("unix", 0)   # http.server espera (host, porta)
+
+
+def servir_ativado():
+    if os.environ.get("LISTEN_FDS") != "1":
+        sys.exit("Sem socket do systemd (rode via opendongle-web.socket).")
+    servidor = _PainelUnix(socket.socket(fileno=3))
+    with open(FLAG_PRONTO, "w"):
+        pass
+
+    def vigia():
+        while time.monotonic() - servidor.ultimo < OCIOSO:
+            time.sleep(10)
+        servidor.shutdown()
+    threading.Thread(target=vigia, daemon=True).start()
+    try:
+        servidor.serve_forever()
+    finally:
+        try:
+            os.unlink(FLAG_PRONTO)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
-    servir()
+    if "--ativado" in sys.argv:
+        servir_ativado()
+    else:
+        servir()
