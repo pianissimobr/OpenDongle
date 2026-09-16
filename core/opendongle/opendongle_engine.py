@@ -395,11 +395,17 @@ UNITS_LOG = {"": None, "opendongle": "opendongle.service",
              "usb-4g": "usb-role-autosense.service"}
 
 
-def sistema_set(hostname, fuso):
+def sistema_set(hostname):
     return _mudar_e_aplicar(
-        lambda cfg: cfg["sistema"].update(hostname=(hostname or "").strip(),
+        lambda cfg: cfg["sistema"].update(hostname=(hostname or "").strip()),
+        "Nome do dongle aplicado.")
+
+
+def hora_set(automatica, fuso):
+    return _mudar_e_aplicar(
+        lambda cfg: cfg["sistema"].update(hora_automatica=bool(automatica),
                                           fuso=(fuso or "").strip()),
-        "Hostname e fuso aplicados.")
+        "Data e hora aplicadas.")
 
 
 def led_set(led, gatilho):

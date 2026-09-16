@@ -42,7 +42,8 @@ TAG = "# TARSILA-OPT"   # marca nossas linhas para idempotência/reversão
 # essenciais (rede, SSH, modem) nunca são escolhidos. Também usado pelo
 # instalar_opendongle.py, que garante o earlyoom quando o zram já existe.
 EARLYOOM_CONF = """# OpenDongle: com zram o padrao (-m 10 -s 10) quase nunca age a tempo.
-EARLYOOM_ARGS="-m 8 -s 100 -r 3600 --avoid ^(systemd|systemd-.+|sshd|sshd-session|dnsmasq|hostapd|wpa_supplicant|rmtfs|qrtr-ns|dbus-daemon)$"
+# apt/dpkg protegidos: matar no meio de uma instalacao quebra o sistema de pacotes.
+EARLYOOM_ARGS="-m 8 -s 100 -r 3600 --avoid ^(systemd|systemd-.+|sshd|sshd-session|dnsmasq|hostapd|wpa_supplicant|rmtfs|qrtr-ns|dbus-daemon|apt-get|dpkg|http|https|gpgv|store)$"
 """
 
 

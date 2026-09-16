@@ -27,6 +27,7 @@ PADRAO = {
     "sistema": {
         "hostname": "opendongle",
         "fuso": "America/Sao_Paulo",
+        "hora_automatica": True,   # acertar o relógio pela internet (NTP)
         "leds": {"red:power": "auto", "green:wlan": "auto", "blue:wan": "auto"},
     },
     "lan": {
@@ -96,6 +97,8 @@ def validar(cfg):
             erros.append("Hostname inválido (minúsculas, números e traço).")
         if not RE_FUSO.match(s["fuso"]):
             erros.append("Fuso horário inválido (ex: America/Sao_Paulo).")
+        if not isinstance(s["hora_automatica"], bool):
+            erros.append("sistema.hora_automatica deve ser true/false.")
         for led, gatilho in s["leds"].items():
             if led not in PADRAO["sistema"]["leds"] or not RE_LED.match(gatilho):
                 erros.append(f"LED/gatilho inválido: {led}={gatilho}")

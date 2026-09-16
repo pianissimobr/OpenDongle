@@ -19,12 +19,15 @@ import os
 import select
 import socket
 import threading
+import time
 
 PORTA = 80
 SOCKET_WEB = "/run/opendongle/web.sock"
 FLAG_PRONTO = "/run/opendongle/web-pronto"   # criada pelo painel ao subir
 MAX_CABECALHO = 16384
 ESPERA_REPASSE = 60   # segundos sem tráfego antes de largar a conexão
+REACORDAR = 5         # "Carregando painel…" pede de novo se o painel não subiu
+_ULTIMO_ACORDAR = [0.0]
 
 PAGINA_CARREGANDO = """<!doctype html><html lang='pt-br'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
@@ -59,13 +62,16 @@ def _responder(conexao, status, tipo, corpo):
 
 
 def _acordar():
-    """Conectar no socket já faz o systemd subir o painel; um pedido mínimo
-    evita que ele veja uma conexão vazia."""
+    """Conectar no socket já faz o systemd subir o painel. Lê a resposta até o
+    fim: fechar antes faz o painel registrar "Broken pipe" a cada partida."""
+    _ULTIMO_ACORDAR[0] = time.monotonic()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(1)
+            s.settimeout(30)
             s.connect(SOCKET_WEB)
             s.sendall(b"GET /__ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            while s.recv(4096):
+                pass
     except OSError:
         pass
 
@@ -127,7 +133,12 @@ def _atender(cliente):
         cabecalho = inicio.split(b"\r\n\r\n", 1)[0].lower()
 
         if caminho == "/__estado":
-            _responder(cliente, "200 OK", "text/plain", "1" if _pronto() else "0")
+            pronto = _pronto()
+            # se o primeiro pedido se perdeu (ou o painel caiu ao subir), a
+            # página de espera não fica girando pra sempre
+            if not pronto and time.monotonic() - _ULTIMO_ACORDAR[0] > REACORDAR:
+                threading.Thread(target=_acordar, daemon=True).start()
+            _responder(cliente, "200 OK", "text/plain", "1" if pronto else "0")
             return
         if (not _pronto() and metodo == "GET" and b"text/html" in cabecalho
                 and not caminho.startswith("/api/")):

@@ -36,6 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_config as conf
 import opendongle_engine as eng
+import opendongle_sistema as sis
 import opendongle_diag as diag
 
 # O painel dorme quando ocioso (processo encerra): nada de estado só em
@@ -192,8 +193,11 @@ _CAT_POR_ID = {c[0]: c for c in CATEGORIAS + [CAT_AVANCADAS]}
 
 # rota -> categoria (a rota decide onde a página "mora" na barra lateral)
 ROTAS_CATEGORIA = {
-    "geral": ("/geral", "/status", "/senha", "/set-password", "/sistema", "/restaurar",
-              "/reset"),
+    "geral": ("/geral", "/status", "/senha", "/set-password", "/sair", "/sessoes-encerrar",
+              "/sistema", "/restaurar", "/reset", "/hora", "/hora-manual", "/espaco",
+              "/espaco-analisar", "/espaco-liberar", "/desempenho", "/processo-encerrar",
+              "/hardware", "/atualizacoes", "/atualizacoes-verificar",
+              "/atualizacoes-instalar", "/energia"),
     "internet": ("/internet", "/hotspot", "/set-hotspot", "/mode-hotspot", "/wifi",
                  "/modem", "/rede", "/lan", "/firewall", "/fw-set", "/tor", "/remoto",
                  "/confirmar", "/rede-confirmar"),
@@ -369,8 +373,14 @@ def tela_status():
 # Índice de busca com sinônimos coloquiais (título, rota, palavras).
 BUSCA = [
     ("Status e saúde do sistema", "/status", "status saude cpu ram memoria disco temperatura ligado internet"),
-    ("Senha de administração", "/senha", "senha admin trocar password login entrar"),
-    ("Nome, fuso horário e backup", "/sistema", "hostname nome fuso hora horario backup restaurar reset fabrica"),
+    ("Conta, senha e sessões", "/senha", "senha admin trocar password login entrar sair sessao usuario conta"),
+    ("Data, hora e fuso horário", "/hora", "data hora relogio errada fuso horario ntp automatica"),
+    ("Espaço em disco", "/espaco", "espaco disco cheio armazenamento liberar limpar ocupando pesado"),
+    ("Desempenho (CPU, RAM e processos)", "/desempenho", "desempenho htop cpu ram memoria processos lento travando encerrar"),
+    ("Hardware do dongle", "/hardware", "hardware placa chip emmc imei mac modelo sobre versao kernel desgaste"),
+    ("Atualizações do sistema", "/atualizacoes", "atualizar atualizacao update upgrade sistema novo apt"),
+    ("Reiniciar ou desligar", "/geral", "reiniciar reboot desligar poweroff"),
+    ("Nome do dongle, backup e reset", "/sistema", "hostname nome backup restaurar reset fabrica"),
     ("Aparência (claro e escuro)", "/geral", "tema escuro claro modo noturno aparencia cor"),
     ("Wi-Fi e hotspot", "/hotspot", "wifi hotspot nome da rede senha do wifi ssid ponto de acesso modo"),
     ("Conectar a uma rede Wi-Fi", "/wifi", "conectar wifi cliente rede casa internet"),
@@ -439,9 +449,24 @@ def tela_geral():
                                                   ("escuro", "Escuro")))
     return page(f"""
       <div class='card'><h1>🖥️ Geral</h1>
-        {item("📊", "Status e saúde", "CPU, RAM, disco e temperatura", "/status")}
-        {item("🔑", "Senha de administração", "A senha deste painel e do SSH", "/senha")}
-        {item("🛠️", "Nome, fuso horário e backup", "Hostname, fuso, backup e reset", "/sistema")}
+        {item("🔑", "Conta e senha", "Senha, sair e sessões abertas", "/senha")}
+        {item("🕒", "Data e hora", "Hora automática, ajuste manual e fuso", "/hora")}
+        {item("🔄", "Atualizações", "Correções e melhorias do sistema", "/atualizacoes")}
+      </div>
+      <div class='card'><h2>Desempenho e espaço</h2>
+        {item("📊", "Status e saúde", "Resumo de CPU, RAM, disco e temperatura", "/status")}
+        {item("📈", "Desempenho", "CPU por núcleo, memória e processos ao vivo", "/desempenho")}
+        {item("💾", "Espaço em disco", "O que está ocupando e liberar espaço", "/espaco")}
+      </div>
+      <div class='card'><h2>Este dongle</h2>
+        {item("🧩", "Hardware", "Placa, eMMC, rádios, modem e MACs", "/hardware")}
+        {item("🛠️", "Nome, backup e reset", "Hostname, backup e configuração de fábrica", "/sistema")}
+        <div class='row'>
+          <form method='post' action='/energia' onsubmit="return confirm('Reiniciar o dongle agora?')">
+            <input type='hidden' name='acao' value='reboot'><button class='sec'>Reiniciar</button></form>
+          <form method='post' action='/energia' onsubmit="return confirm('Desligar o dongle? Pra ligar de novo é preciso tirar e recolocar.')">
+            <input type='hidden' name='acao' value='poweroff'><button class='sec'>Desligar</button></form>
+        </div>
       </div>
       <div class='card'><h2>Aparência do painel</h2>
         <div class='seg' id='tema'>{botoes}</div>
@@ -602,18 +627,209 @@ def tela_hotspot(m="", erro=False):
 
 
 def tela_senha(m="", erro=False):
+    sess = sis.sessoes()["sessoes"]
+    linhas = "".join(item("🖥️" if x["tty"] else "🌐", f"{x['usuario']} · {x['servico'] or x['tty']}",
+                          " · ".join(v for v in (x["origem"] and f"de {x['origem']}", x["desde"]) if v))
+                     for x in sess) or "<p>Nenhuma sessão de SSH ou console aberta.</p>"
     return page(f"""
       <div class='card'>
-        <h1>🔑 Senha de administração</h1>
-        <p>É a senha deste painel e do usuário do sistema (SSH). Ao trocar,
-        as outras sessões abertas do painel são encerradas.</p>
+        <h1>🔑 Conta e senha</h1>
+        {item("👤", eng.ADMIN_USER, "Usuário de administração do dongle")}
         {msg(m, 'er' if erro else 'ok')}
+      </div>
+      <div class='card'>
+        <h2>Trocar senha</h2>
+        <p>É a senha deste painel e do SSH. Ao trocar, as outras sessões do painel
+        são encerradas.</p>
         <form method='post' action='/set-password'>
           <label>Nova senha (mín. 6)</label>
           <input name='senha' type='password' minlength='6' required>
           <button>Trocar senha</button>
         </form>
-      </div>""", "Senha de administração")
+      </div>
+      <div class='card'>
+        <h2>Sessões</h2>
+        {linhas}
+        <div class='row'>
+          <form method='post' action='/sair'><button class='sec'>Sair do painel</button></form>
+          <form method='post' action='/sessoes-encerrar'
+                onsubmit="return confirm('Encerrar todas as sessões do painel em outros aparelhos?')">
+            <button class='sec'>Encerrar outras sessões do painel</button></form>
+        </div>
+      </div>""", "Conta e senha")
+
+
+def tela_hora(r=None):
+    st = sis.hora_status()
+    opcoes = "".join(f"<option value='{_e(z)}'{' selected' if z == st['fuso'] else ''}>{_e(rot)}</option>"
+                     for z, rot in st["fusos"])
+    sinc = ("<span class='badge b-ok'>sincronizada pela internet</span>" if st["sincronizada"]
+            else "<span class='badge b-av'>não sincronizada</span>")
+    manual = ("" if st["automatica"] else f"""
+      <div class='card'>
+        <h2>Ajustar manualmente</h2>
+        <form method='post' action='/hora-manual'>
+          <div class='row'>
+            <div><label>Data</label><input type='date' name='data' required></div>
+            <div><label>Hora</label><input type='time' name='hora' required></div>
+          </div>
+          <button>Ajustar</button>
+        </form>
+      </div>""")
+    return page(f"""
+      <div class='card'>
+        <h1>🕒 Data e hora</h1>
+        <p style='font-size:1.4em;color:var(--tx);margin:6px 0'>{_e(st['agora'])}</p>
+        {sinc}{_resultado(r)}
+        <form method='post' action='/hora'>
+          <label style='display:flex;gap:10px;align-items:center'>
+            <input type='checkbox' name='automatica' value='1' style='width:auto'
+            {'checked' if st['automatica'] else ''}>Acertar a hora automaticamente pela internet</label>
+          <label>Fuso horário</label>
+          <select name='fuso'>{opcoes}</select>
+          <div class='aviso'>Este dongle não tem bateria de relógio: sem internet ao
+          ligar, a hora fica errada até sincronizar.</div>
+          <button>Salvar</button>
+        </form>
+      </div>{manual}""", "Data e hora")
+
+
+def _barra(pct):
+    cor = "var(--er)" if pct >= 90 else ("var(--av-tx)" if pct >= 75 else "var(--ac)")
+    return (f"<div style='height:8px;border-radius:4px;background:var(--sec);overflow:hidden;"
+            f"margin-top:6px'><div style='height:100%;width:{min(pct, 100)}%;background:{cor}'>"
+            "</div></div>")
+
+
+def tela_espaco(r=None):
+    st = sis.espaco_status()
+    discos = "".join(f"<div style='margin:10px 0'><b>{_e(d['nome'])}</b> "
+                     f"<small style='color:var(--mut)'>{d['livre_mb']} MB livres de "
+                     f"{d['total_mb']} MB</small>{_barra(d['usado_pct'])}</div>"
+                     for d in st["discos"])
+    lib = st["liberavel"]
+    analise = st["analise"]
+    if st["analisando"]:
+        pastas = "<p>Analisando… esta página atualiza sozinha.</p>"
+    elif analise:
+        pastas = "".join(item("📁", x["caminho"], f"{x['mb']} MB") for x in analise["pastas"])
+        pastas += (f"<p style='font-size:.8em'>Analisado às "
+                   f"{time.strftime('%H:%M', time.localtime(analise['quando']))}.</p>")
+    else:
+        pastas = "<p>Ainda não analisado.</p>"
+    return page(f"""
+      {"<meta http-equiv='refresh' content='3'>" if st['analisando'] else ""}
+      <div class='card'><h1>💾 Espaço em disco</h1>{discos}{_resultado(r)}</div>
+      <div class='card'><h2>O que está ocupando</h2>{pastas}
+        <form method='post' action='/espaco-analisar'><button class='sec'>Analisar agora</button></form>
+      </div>
+      <div class='card'><h2>Liberar espaço</h2>
+        {item("📦", "Pacotes baixados do apt", f"{lib['cache_apt_mb']} MB")}
+        {item("🗂️", "Logs antigos compactados", f"{lib['logs_antigos_mb']} MB")}
+        {item("📜", "Registro do sistema (journal)", f"{lib['journal_mb']} MB, mantém os últimos 8 MB")}
+        <form method='post' action='/espaco-liberar'><button>Liberar espaço</button></form>
+      </div>""", "Espaço em disco")
+
+
+def tela_desempenho(r=None):
+    return page(f"""
+      <div class='card'><h1>📈 Desempenho</h1>{_resultado(r)}
+        <p id='carga'>Carregando…</p>
+        <div id='nucleos'></div>
+      </div>
+      <div class='card'><h2>Memória e temperatura</h2><div id='memoria'></div></div>
+      <div class='card'><h2>Processos</h2>
+        <p style='font-size:.85em'>Atualiza a cada 2 s enquanto esta página estiver aberta.</p>
+        <div id='processos'></div>
+      </div>
+      <script>
+      const esc=t=>String(t).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+      const barra=p=>"<div style='height:8px;border-radius:4px;background:var(--sec);overflow:hidden;margin-top:4px'>"
+        +"<div style='height:100%;width:"+Math.min(p||0,100)+"%;background:var(--ac)'></div></div>";
+      async function atualiza(){{
+        let d; try{{ d=await (await fetch('/api/desempenho',{{cache:'no-store'}})).json(); }}catch(e){{ return; }}
+        if(!d.ok) return;
+        document.getElementById('carga').textContent='Carga (1, 5, 15 min): '+d.carga.join(' · ');
+        document.getElementById('nucleos').innerHTML=d.nucleos.map(n=>
+          "<div style='margin:6px 0'><small>"+esc(n.nome)+" · "+(n.pct===null?'…':n.pct+'%')
+          +(n.mhz?' · '+n.mhz+' MHz':'')+"</small>"+barra(n.pct)+"</div>").join('');
+        let m="<div class='item'><span class='ic'>🧠</span><span class='tx'>RAM<small>"
+          +d.ram.disponivel_mb+" MB disponíveis de "+d.ram.total_mb+" MB</small></span></div>";
+        if(d.swap.total_mb) m+="<div class='item'><span class='ic'>🗜️</span><span class='tx'>Swap (zram)<small>"
+          +d.swap.usado_mb+" MB usados de "+d.swap.total_mb+" MB"
+          +(d.zram&&d.zram.dados_mb?" · "+d.zram.dados_mb+" MB comprimidos em "+d.zram.comprimido_mb+" MB":"")
+          +"</small></span></div>";
+        for(const [k,v] of Object.entries(d.temperaturas)) m+="<div class='item'><span class='ic'>🌡️</span>"
+          +"<span class='tx'>"+esc(k)+"<small>"+v+" °C</small></span></div>";
+        document.getElementById('memoria').innerHTML=m;
+        document.getElementById('processos').innerHTML=d.processos.map(p=>
+          "<div class='item'><span class='tx'>"+esc(p.nome)+"<small>PID "+p.pid+" · CPU "
+          +(p.cpu===null?'…':p.cpu+'%')+" · "+p.ram_mb+" MB</small></span>"
+          +(p.protegido?"":"<form method='post' action='/processo-encerrar' style='margin:0' "
+            +"onsubmit=\"return confirm('Encerrar "+esc(p.nome)+"?')\"><input type='hidden' name='pid' value='"+p.pid
+            +"'><button class='sec' style='width:auto;margin:0;padding:6px 10px'>Encerrar</button></form>")
+          +"</div>").join('');
+      }}
+      atualiza(); setInterval(()=>{{ if(!document.hidden) atualiza(); }}, 2000);
+      </script>""", "Desempenho")
+
+
+def tela_hardware():
+    h = sis.hardware()
+    e = h["emmc"]
+    return page(f"""
+      <div class='card'><h1>🧩 Hardware</h1>
+        {item("🔌", h["placa"] or "Placa", f"{h['compativel']} · SoC {h['soc']}")}
+        {item("⚙️", f"CPU com {h['cpu']['nucleos']} núcleos",
+              f"{min(h['cpu']['mhz'] or [0])}–{max(h['cpu']['mhz'] or [0])} MHz · governor {h['cpu']['governor']}")}
+        {item("🧠", "RAM", f"{h['ram_mb']} MB visíveis pro sistema")}
+        {item("💽", f"eMMC {e['modelo']}", f"{e['tamanho_gb']} GB · fabricado em {e['fabricado']}")}
+        {item("🩺", "Desgaste do eMMC", " / ".join(e['desgaste']) + f" · reservas: {e['reservas']}")}
+      </div>
+      <div class='card'><h2>Rádios e rede</h2>
+        {item("📶", "Wi-Fi", f"driver {h['wifi']['driver']} · MAC {h['wifi']['mac']}")}
+        {item("🔵", "Bluetooth", f"MAC {h['bluetooth_mac'] or '—'}")}
+        {item("🔗", "Rede USB", f"MAC {h['usb_mac'] or '—'}")}
+        {item("📱", "Modem 4G", f"IMEI {h['modem']['imei'] or 'não informado pelo modem'} · firmware {h['modem']['firmware'] or '—'}")}
+      </div>
+      <div class='card'><h2>Software</h2>
+        {item("🐧", h["sistema"], f"kernel {h['kernel']}")}
+        {item("⏱️", "Ligado há", h["ligado_ha"])}
+      </div>""", "Hardware")
+
+
+def tela_atualizacoes(r=None):
+    st = sis.atualizacoes_status()
+    etapa = st.get("etapa")
+    quando = (time.strftime("%d/%m %H:%M", time.localtime(st["quando"])) if st.get("quando") else "")
+    if st["rodando"]:
+        # antes do trabalho gravar o 1º estado, a etapa ainda é a da vez anterior
+        estado = (f"<span class='badge b-av'>instalando {st.get('pendentes') or ''} atualização(ões)…</span>"
+                  if etapa == "instalando" else "<span class='badge b-av'>procurando atualizações…</span>")
+    elif etapa == "verificado":
+        estado = (f"<span class='badge b-av'>{st['pendentes']} atualização(ões) disponível(is)</span>"
+                  if st["pendentes"] else "<span class='badge b-ok'>sistema em dia</span>")
+    elif etapa == "instalado":
+        estado = f"<span class='badge b-ok'>{st.get('feitas', 0)} atualização(ões) instalada(s)</span>"
+    elif etapa == "erro":
+        estado = f"<span class='badge b-er'>{_e(st.get('erro', 'falhou'))}</span>"
+    else:
+        estado = "<span class='badge b-av'>ainda não verificado</span>"
+    pacotes = ", ".join(_e(x) for x in st.get("pacotes", [])) if etapa == "verificado" else ""
+    botoes = "" if st["rodando"] else f"""
+        <form method='post' action='/atualizacoes-verificar'><button class='sec'>Procurar atualizações</button></form>
+        {"<form method='post' action='/atualizacoes-instalar' onsubmit=\"return confirm('Instalar agora? Serviços podem reiniciar e a conexão pode piscar.')\"><button>Instalar atualizações</button></form>" if etapa == "verificado" and st.get("pendentes") else ""}"""
+    return page(f"""
+      {"<meta http-equiv='refresh' content='4'>" if st['rodando'] else ""}
+      <div class='card'><h1>🔄 Atualizações</h1>
+        {estado}{_resultado(r)}
+        {f"<p style='font-size:.85em'>Última verificação: {quando}</p>" if quando else ""}
+        {f"<p style='font-size:.85em'>{pacotes}</p>" if pacotes else ""}
+        <div class='aviso'>Precisa de internet. O apt é pesado pra este dongle: chega a
+        ~170 MB de RAM (medido) e escreve no eMMC. Serviços atualizados reiniciam e a
+        conexão pode piscar. Roda em segundo plano: pode fechar esta página.</div>
+        {botoes}
+      </div>""", "Atualizações")
 
 
 def _linha_dispositivo(d, acao=None):
@@ -957,10 +1173,8 @@ def tela_sistema(r=None):
       <div class='card'>
         <h1>🛠️ Sistema</h1>{_resultado(r)}
         <form method='post' action='/sistema'>
-          <label>Hostname (o painel fica em hostname.local)</label>
+          <label>Nome do dongle (o painel fica em nome.local)</label>
           <input name='hostname' value='{_e(s['hostname'])}' required>
-          <label>Fuso horário (ex: America/Sao_Paulo)</label>
-          <input name='fuso' value='{_e(s['fuso'])}' required>
           <button>Salvar</button>
         </form>
       </div>
@@ -1152,6 +1366,14 @@ class Painel(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corpo)
 
+    def _send_json(self, dados, code=200):
+        corpo = json.dumps(dados, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(corpo)
+
     def _redir(self, dest, cookie=None):
         self.send_response(302)
         self.send_header("Location", dest)
@@ -1216,7 +1438,13 @@ class Painel(BaseHTTPRequestHandler):
         protegidas = {"/rede": tela_rede, "/firewall": tela_firewall,
                       "/sistema": tela_sistema, "/tor": tela_tor, "/remoto": tela_remoto,
                       "/hotspot": tela_hotspot, "/senha": tela_senha, "/leds": tela_leds,
-                      "/avancadas": tela_avancadas, "/recursos": tela_recursos}
+                      "/avancadas": tela_avancadas, "/recursos": tela_recursos,
+                      "/hora": tela_hora, "/espaco": tela_espaco, "/desempenho": tela_desempenho,
+                      "/hardware": tela_hardware, "/atualizacoes": tela_atualizacoes}
+        if path == "/api/desempenho":
+            if not self._logado():
+                return self._send_json({"ok": False, "erro": "login"}, 403)
+            return self._send_json(sis.desempenho())
         if path in protegidas or path in ("/logs", "/backup.json"):
             if not self._logado():
                 return self._send(tela_login(voltar=path))
@@ -1292,8 +1520,7 @@ class Painel(BaseHTTPRequestHandler):
         if path == "/redir-rm":
             return self._send(tela_firewall(eng.fw_redir_rm(f.get("nome", ""))))
         if path == "/sistema":
-            return self._send(tela_sistema(eng.sistema_set(
-                f.get("hostname"), f.get("fuso"))))
+            return self._send(tela_sistema(eng.sistema_set(f.get("hostname"))))
         if path == "/led":
             return self._send(tela_leds(eng.led_set(
                 f.get("led", ""), f.get("gatilho", ""))))
@@ -1313,6 +1540,29 @@ class Painel(BaseHTTPRequestHandler):
                 return self._send(tela_sistema(
                     {"ok": False, "erro": "Digite RESET (maiúsculas) pra confirmar."}))
             return self._send(tela_sistema(eng.reset()))
+        if path == "/hora":
+            return self._send(tela_hora(eng.hora_set(f.get("automatica") == "1", f.get("fuso"))))
+        if path == "/hora-manual":
+            return self._send(tela_hora(sis.hora_manual(f.get("data"), f.get("hora"))))
+        if path == "/espaco-analisar":
+            return self._send(tela_espaco(sis.espaco_analisar()))
+        if path == "/espaco-liberar":
+            return self._send(tela_espaco(sis.espaco_liberar()))
+        if path == "/processo-encerrar":
+            return self._send(tela_desempenho(sis.encerrar_processo(f.get("pid"))))
+        if path in ("/atualizacoes-verificar", "/atualizacoes-instalar"):
+            return self._send(tela_atualizacoes(
+                sis.atualizacoes_iniciar(path.endswith("instalar"))))
+        if path == "/energia":
+            r = sis.energia(f.get("acao"))
+            return self._send(page(f"<div class='card'><h1>⚡ Energia</h1>{_resultado(r)}</div>",
+                                   "Energia"))
+        if path == "/sair":
+            return self._redir("/", "s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+        if path == "/sessoes-encerrar":
+            _chave(renovar=True)
+            return self._send(tela_senha("As outras sessões do painel foram encerradas."),
+                              extra={"Set-Cookie": _cookie_sessao()})
         if path == "/set-hotspot":
             r = eng.set_hotspot(f.get("ssid"), f.get("senha"))
             return self._send(tela_hotspot(r.get("aviso") if r["ok"] else r["erro"],

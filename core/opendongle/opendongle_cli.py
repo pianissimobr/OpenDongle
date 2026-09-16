@@ -32,6 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_engine as eng
+import opendongle_sistema as sis
 import opendongle_diag as diag
 
 
@@ -123,6 +124,21 @@ def main():
     p.add_argument("acao", choices=["on", "off", "status", "login", "logout"])
     p.add_argument("--lan", action="store_true", help="anuncia a LAN do dongle")
     p.add_argument("--saida", action="store_true", help="dongle vira exit node")
+
+    sub.add_parser("hardware", help="placa, eMMC, rádios, modem e MACs")
+
+    p = sub.add_parser("hora", help="data e hora (status, auto on|off, ajustar)")
+    p.add_argument("acao", choices=["status", "auto", "ajustar"])
+    p.add_argument("valor", nargs="*", help="auto: on|off · ajustar: AAAA-MM-DD HH:MM")
+
+    p = sub.add_parser("espaco", help="espaço em disco (status, analisar, liberar)")
+    p.add_argument("acao", nargs="?", default="status", choices=["status", "analisar", "liberar"])
+
+    p = sub.add_parser("atualizacoes", help="atualizações do sistema")
+    p.add_argument("acao", nargs="?", default="status", choices=["status", "verificar", "instalar"])
+
+    sub.add_parser("reiniciar", help="reinicia o dongle")
+    sub.add_parser("desligar", help="desliga o dongle (religar: tirar e recolocar)")
 
     p = sub.add_parser("logs", help="log do sistema (ou de um serviço)")
     p.add_argument("unidade", nargs="?", default="", choices=list(eng.UNITS_LOG))
@@ -240,6 +256,49 @@ def main():
             res = eng.remoto_logout()
         if res.get("link_login") and not args.json:
             print(f"Login: {res['link_login']}")
+    elif args.cmd == "hardware":
+        res = sis.hardware()
+        if not args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return
+    elif args.cmd == "hora":
+        if args.acao == "status":
+            res = sis.hora_status()
+            if not args.json:
+                print(f"{res['agora']} · fuso {res['fuso']} · automática "
+                      f"{'ligada' if res['automatica'] else 'desligada'}"
+                      f"{' (sincronizada)' if res['sincronizada'] else ''}")
+                return
+        elif args.acao == "auto":
+            if args.valor not in (["on"], ["off"]):
+                ap.error("use: hora auto on|off")
+            res = eng.hora_set(args.valor == ["on"], sis.hora_status()["fuso"])
+        else:
+            if len(args.valor) != 2:
+                ap.error("use: hora ajustar AAAA-MM-DD HH:MM")
+            res = sis.hora_manual(*args.valor)
+    elif args.cmd == "espaco":
+        if args.acao == "status":
+            res = sis.espaco_status()
+            if not args.json:
+                for d in res["discos"]:
+                    print(f"{d['nome']}: {d['livre_mb']} MB livres de {d['total_mb']} MB ({d['usado_pct']}% usado)")
+                for p in (res["analise"] or {}).get("pastas", []):
+                    print(f"  {p['mb']:8.1f} MB  {p['caminho']}")
+                return
+        else:
+            res = sis.espaco_analisar() if args.acao == "analisar" else sis.espaco_liberar()
+    elif args.cmd == "atualizacoes":
+        if args.acao == "status":
+            res = sis.atualizacoes_status()
+            if not args.json:
+                print(f"etapa: {res.get('etapa')} · pendentes: {res.get('pendentes')}"
+                      f"{' · rodando' if res['rodando'] else ''}")
+                return
+        else:
+            res = sis.atualizacoes_iniciar(args.acao == "instalar")
+    elif args.cmd in ("reiniciar", "desligar"):
+        res = sis.energia("reboot" if args.cmd == "reiniciar" else "poweroff")
     elif args.cmd == "logs":
         res = eng.logs(args.unidade, args.n)
         if res["ok"] and not args.json:

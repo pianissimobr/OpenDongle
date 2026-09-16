@@ -577,6 +577,14 @@ def _aplicar_remoto(cfg):
     return mudou
 
 
+def _aplicar_ntp(ligar):
+    _, out, _ = _run(["timedatectl", "show", "-p", "NTP", "--value"])
+    if (out.strip() == "yes") == ligar:
+        return False
+    _run(["timedatectl", "set-ntp", "true" if ligar else "false"])
+    return True
+
+
 def _aplicar_dnsproxy(ligar):
     rc, _, _ = _run(["systemctl", "is-enabled", "dnsproxy"])
     if (rc == 0) == ligar:
@@ -809,6 +817,8 @@ def aplicar(cfg=None):
             mudou.append("hostname")
         if _aplicar_fuso(cfg["sistema"]["fuso"]):
             mudou.append("fuso")
+        if _aplicar_ntp(cfg["sistema"]["hora_automatica"]):
+            mudou.append("hora automática")
     except (OSError, RuntimeError) as e:
         return {"ok": False, "mudou": mudou, "erro": str(e)}
     return {"ok": True, "mudou": mudou}
