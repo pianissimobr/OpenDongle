@@ -162,15 +162,28 @@ def sessoes():
         lista = []
     saida = []
     for s in lista:
-        _, info, _ = _run(["loginctl", "show-session", str(s.get("session")), "-p",
-                           "RemoteHost", "-p", "Service", "-p", "Timestamp"], timeout=5)
-        campos = dict(l.split("=", 1) for l in info.splitlines() if "=" in l)
         if s.get("class") != "user":
             continue
-        saida.append({"usuario": s.get("user", ""), "tty": s.get("tty") or "",
-                      "servico": campos.get("Service", ""), "origem": campos.get("RemoteHost", ""),
-                      "desde": campos.get("Timestamp", "")})
+        _, info, _ = _run(["loginctl", "show-session", str(s.get("session")), "-p",
+                           "RemoteHost", "-p", "Service", "-p", "Timestamp", "-p", "State"],
+                           timeout=5)
+        campos = dict(l.split("=", 1) for l in info.splitlines() if "=" in l)
+        if campos.get("State") == "closing":   # já encerrada, esperando processos saírem
+            continue
+        saida.append({"id": str(s.get("session")), "usuario": s.get("user", ""),
+                      "tty": s.get("tty") or "", "servico": campos.get("Service", ""),
+                      "origem": campos.get("RemoteHost", ""), "desde": campos.get("Timestamp", "")})
     return {"ok": True, "sessoes": saida}
+
+
+def encerrar_sessao(sessao_id):
+    sessao_id = str(sessao_id or "")
+    if not any(x["id"] == sessao_id for x in sessoes()["sessoes"]):
+        return {"ok": False, "erro": "Sessão não encontrada (talvez já tenha saído)."}
+    rc, _, err = _run(["loginctl", "terminate-session", sessao_id], timeout=15)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não encerrou: {err[:120]}"}
+    return {"ok": True, "aviso": "Sessão encerrada."}
 
 
 # --------------------------------------------------------------- ESPAÇO

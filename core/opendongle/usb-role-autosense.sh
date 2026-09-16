@@ -14,7 +14,9 @@ USB0_CARRIER=/sys/class/net/usb0/carrier
 QMI_DEV=/dev/wwan0qmi0
 AT_DEV=/dev/wwan0at0
 APN_CONF=/etc/usb-role-autosense-apn.conf
-USERNAME="user"
+# usuário do dongle pelo UID 1000: o nome pode ser trocado pelo painel
+USERNAME="$(getent passwd 1000 | cut -d: -f1)"
+USERNAME="${USERNAME:-user}"
 LEDS="red:power green:wlan blue:wan"
 # "leds" nao e' grupo padrao da imagem (diferente de audio/video/dialout/
 # disk...); criamos ele mesmo logo abaixo, antes do loop que atribui os

@@ -15,16 +15,19 @@ Usado pelo painel e pela CLI.
 
 import math
 import os
+import pwd
 import re
 import struct
 import subprocess
 import time
 
-USUARIO = "user"
-UID = 1000
+UID = 1000   # usuário do dongle pelo UID: o nome pode ser trocado no painel
 PACOTES_BT = ["pipewire", "wireplumber", "libspa-0.2-bluetooth"]
-WP_CONF_DIR = f"/home/{USUARIO}/.config/wireplumber/wireplumber.conf.d"
-WP_CONF = f"{WP_CONF_DIR}/51-opendongle.conf"
+WP_CONF_REL = ".config/wireplumber/wireplumber.conf.d/51-opendongle.conf"
+
+
+def _usuario():
+    return pwd.getpwuid(UID)
 # Sem tela não há "seat" ativo, e por padrão o WirePlumber só liga o Bluetooth
 # pra sessão que está no seat: num dongle ele nunca ligaria.
 WP_CONF_CONTEUDO = """# GERADO pelo OpenDongle: aparelho sem tela, Bluetooth sem depender de seat
@@ -199,7 +202,7 @@ def testar_entrada(placa_id):
 def _como_usuario(cmd, timeout=15, entrada=None):
     env = ["env", f"XDG_RUNTIME_DIR=/run/user/{UID}",
            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{UID}/bus"]
-    return _run(["runuser", "-u", USUARIO, "--"] + env + cmd, timeout, entrada)
+    return _run(["runuser", "-u", _usuario().pw_name, "--"] + env + cmd, timeout, entrada)
 
 
 def bt_instalado():
@@ -217,14 +220,16 @@ def aplicar_bt(ligar):
     if ligar:
         if not bt_instalado():
             raise RuntimeError("PipeWire não está instalado.")
-        os.makedirs(WP_CONF_DIR, exist_ok=True)
-        atual = open(WP_CONF).read() if os.path.exists(WP_CONF) else ""
+        wp_conf = os.path.join(_usuario().pw_dir, WP_CONF_REL)
+        os.makedirs(os.path.dirname(wp_conf), exist_ok=True)
+        atual = open(wp_conf).read() if os.path.exists(wp_conf) else ""
         if atual != WP_CONF_CONTEUDO:
-            with open(WP_CONF, "w") as f:
+            with open(wp_conf, "w") as f:
                 f.write(WP_CONF_CONTEUDO)
-            _run(["chown", "-R", f"{USUARIO}:{USUARIO}", f"/home/{USUARIO}/.config/wireplumber"])
+            _run(["chown", "-R", f"{UID}:{_usuario().pw_gid}",
+                  os.path.join(_usuario().pw_dir, ".config/wireplumber")])
             mudou.append("wireplumber.conf")
-        _run(["loginctl", "enable-linger", USUARIO], 15)
+        _run(["loginctl", "enable-linger", str(UID)], 15)
         for _ in range(20):   # o user@1000 sobe com o linger
             if os.path.exists(f"/run/user/{UID}/bus"):
                 break
@@ -248,9 +253,9 @@ def aplicar_bt(ligar):
         if bt_ativo():
             mudou.append("desligou áudio bluetooth")
         _como_usuario(["systemctl", "--user", "disable", "--now"] + SERVICOS_GLOBAIS, 30)
-    rc, out, _ = _texto(["loginctl", "show-user", USUARIO, "-p", "Linger", "--value"], 10)
+    rc, out, _ = _texto(["loginctl", "show-user", str(UID), "-p", "Linger", "--value"], 10)
     if out == "yes":
-        _run(["loginctl", "disable-linger", USUARIO], 15)
+        _run(["loginctl", "disable-linger", str(UID)], 15)
     return mudou
 
 

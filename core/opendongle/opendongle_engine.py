@@ -22,6 +22,7 @@ import copy
 import glob
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -35,7 +36,7 @@ import opendongle_config as conf
 HOTSPOT_CON = "hotspot"       # nome da conexão NM do hotspot (minúsculo
                                 # na imagem base do OpenStick-Builder)
 IFACE_WIFI = "wlan0"
-ADMIN_USER = "user"
+ADMIN_UID = 1000   # o usuário de administração é achado pelo UID: o nome pode mudar
 SSID_PADRAO = "OpenDongle"
 SENHA_PADRAO = "opendongle"
 
@@ -1023,14 +1024,200 @@ def modem_set_apn(mcc_mnc, apn):
 
 
 # --------------------------------------------------------------- SENHA ADMIN
+def _erro_senha(senha):
+    if len(senha) < 6:
+        return "Use ao menos 6 caracteres."
+    if any(ord(c) < 32 or ord(c) == 127 for c in senha):
+        return "A senha não pode ter quebra de linha nem caracteres de controle."
+    return None
+
+
 def set_password(nova):
-    if len(nova) < 6:
-        return {"ok": False, "erro": "Use ao menos 6 caracteres."}
+    erro = _erro_senha(nova)
+    if erro:
+        return {"ok": False, "erro": erro}
     # chpasswd lê "user:senha" do stdin (rodamos como root)
-    rc, _, err = _run(["chpasswd"], entrada=f"{ADMIN_USER}:{nova}\n")
+    rc, _, err = _run(["chpasswd"], entrada=f"{admin_usuario()}:{nova}\n")
     if rc != 0:
         return {"ok": False, "erro": f"Falha ao trocar senha: {err[:120]}"}
     return {"ok": True, "aviso": "Senha de administração atualizada."}
+
+
+def admin_usuario():
+    try:
+        return pwd.getpwuid(ADMIN_UID).pw_name
+    except KeyError:
+        return "user"
+
+
+_RE_USUARIO = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
+_NOMES_RESERVADOS = {"root", "admin", "daemon", "bin", "sys", "sync", "games", "man", "lp",
+                     "mail", "news", "uucp", "proxy", "backup", "list", "irc", "nobody",
+                     "sudo", "adm", "wheel", "staff", "users", "opendongle", "debian-tor"}
+
+
+def _sem_processos(uid, espera=10):
+    for _ in range(espera * 2):
+        rc, _, _ = _run(["pgrep", "-u", str(uid)], 5)
+        if rc != 0:
+            return True
+        time.sleep(0.5)
+    _run(["pkill", "-KILL", "-u", str(uid)], 5)
+    time.sleep(1)
+    return _run(["pgrep", "-u", str(uid)], 5)[0] != 0
+
+
+def _erro_nome_usuario(novo):
+    """Motivo pelo qual 'novo' não serve pra renomear o admin (None = serve)."""
+    if not _RE_USUARIO.match(novo):
+        return "Use de 3 a 32 letras minúsculas, números, - ou _, começando por uma letra."
+    if novo in _NOMES_RESERVADOS:
+        return f"'{novo}' é um nome reservado do sistema."
+    try:
+        pwd.getpwnam(novo)
+        return f"Já existe um usuário chamado {novo}."
+    except KeyError:
+        pass
+    if _run(["getent", "group", novo], 5)[0] == 0:
+        return f"Já existe um grupo chamado {novo}."
+    if os.path.exists(f"/home/{novo}"):
+        return f"A pasta /home/{novo} já existe."
+    return None
+
+
+def renomear_usuario(novo, destacar=True):
+    """Renomeia o usuário de administração (nome, grupo, pasta pessoal).
+    O UID não muda: sudo (grupo 'sudo'), senha e chaves SSH continuam valendo.
+    Encerra as sessões desse usuário: o usermod não renomeia com ele logado."""
+    antigo = admin_usuario()
+    novo = (novo or "").strip()
+    if novo == antigo:
+        return {"ok": False, "erro": f"O usuário já se chama {antigo}."}
+    erro = _erro_nome_usuario(novo)
+    if erro:
+        return {"ok": False, "erro": erro}
+    casa_antiga = pwd.getpwuid(ADMIN_UID).pw_dir
+    casa_nova = f"/home/{novo}"
+    linger = os.path.exists(f"/var/lib/systemd/linger/{antigo}")
+
+    # pedido de dentro de uma sessão desse usuário (ssh + sudo): encerrar as
+    # sessões mataria o próprio processo no meio; roda fora dela, pelo systemd
+    try:
+        dentro = f"user-{ADMIN_UID}.slice" in open("/proc/self/cgroup").read()
+    except OSError:
+        dentro = False
+    if dentro and destacar:
+        rc, _, err = _run(["systemd-run", "--collect", "--unit", "opendongle-renomear-usuario",
+                           sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                        "opendongle_cli.py"),
+                           "usuario", "--novo", novo], 20)
+        if rc != 0:
+            return {"ok": False, "erro": f"Não iniciou a renomeação: {err[:160]}"}
+        return {"ok": True, "aviso": f"Renomeando para {novo}: esta sessão SSH vai cair em "
+                                     f"instantes. Entre de novo como {novo}@ (a senha é a mesma)."}
+
+    _run(["loginctl", "terminate-user", str(ADMIN_UID)], 15)
+    _run(["systemctl", "stop", f"user@{ADMIN_UID}.service"], 30)
+    if not _sem_processos(ADMIN_UID):
+        return {"ok": False, "erro": "Ainda há programas rodando como esse usuário; tente de novo."}
+
+    mover = ["-d", casa_nova, "-m"] if casa_antiga == f"/home/{antigo}" else []
+    rc, _, err = _run(["usermod", "-l", novo] + mover + [antigo], 120)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não renomeou: {err[:160]}"}
+    grupo = _run(["getent", "group", antigo], 5)
+    if grupo[0] == 0 and grupo[1].split(":")[2] == str(ADMIN_UID):
+        rc, _, err = _run(["groupmod", "-n", novo, antigo], 30)
+        if rc != 0:   # volta o usuário pra não deixar pela metade
+            _run(["usermod", "-l", antigo] + (["-d", casa_antiga, "-m"] if mover else []) + [novo], 120)
+            return {"ok": False, "erro": f"Não renomeou o grupo: {err[:160]}"}
+    # sobras que o usermod não trata em todas as versões
+    for arq in ("/etc/subuid", "/etc/subgid"):
+        try:
+            linhas = open(arq).read().splitlines(keepends=True)
+            trocadas = [novo + l[len(antigo):] if l.startswith(antigo + ":") else l for l in linhas]
+            if trocadas != linhas:
+                with open(arq, "w") as f:
+                    f.writelines(trocadas)
+        except OSError:
+            pass
+    cron = f"/var/spool/cron/crontabs/{antigo}"
+    if os.path.exists(cron):
+        os.rename(cron, f"/var/spool/cron/crontabs/{novo}")
+    if linger:
+        try:
+            os.remove(f"/var/lib/systemd/linger/{antigo}")
+        except OSError:
+            pass
+        _run(["loginctl", "enable-linger", novo], 15)
+    return {"ok": True, "aviso": f"Usuário renomeado de {antigo} para {novo}. "
+                                 f"No SSH, entre como {novo}@ (a senha é a mesma)."}
+
+
+# --------------------------------------------------------------- primeiro uso
+# O repositório entrega o dongle com user/1. Quem instala pelo USB sabe o que
+# faz; quem liga o dongle na tomada (modo host) com a senha de fábrica é o
+# usuário final, e o painel pede um cadastro antes de qualquer outra coisa.
+SENHA_FABRICA = "1"
+ROLE_SW = "/sys/class/usb_role/ci_hdrc.0-role-switch/role"
+_RE_NOME_PESSOA = re.compile(r"^[^\W\d_]+(?:[ '.-][^\W\d_]+)*$")
+
+
+def modo_host():
+    try:
+        with open(ROLE_SW) as f:
+            return f.read().strip() == "host"
+    except OSError:
+        return False
+
+
+def nome_completo():
+    try:
+        return pwd.getpwuid(ADMIN_UID).pw_gecos.split(",")[0].strip()
+    except KeyError:
+        return ""
+
+
+def cadastro_inicial(senha_root, nome, sobrenome, usuario, senha):
+    """Valida tudo antes de mudar qualquer coisa. 'etapa' diz em qual passo
+    do cadastro está o erro (1 root, 2 nome, 3 usuário e senha)."""
+    nome, sobrenome, usuario = (nome or "").strip(), (sobrenome or "").strip(), (usuario or "").strip()
+    senha_root, senha = senha_root or "", senha or ""
+    erro = lambda etapa, texto: {"ok": False, "etapa": etapa, "erro": texto}
+    if _erro_senha(senha_root):
+        return erro(1, _erro_senha(senha_root))
+    if senha_root == SENHA_FABRICA:
+        return erro(1, "Escolha uma senha diferente da de fábrica.")
+    for rotulo, valor in (("Nome", nome), ("Sobrenome", sobrenome)):
+        if not valor or len(valor) > 40 or not _RE_NOME_PESSOA.match(valor):
+            return erro(2, f"{rotulo}: use só letras (até 40), sem números ou símbolos.")
+    atual = admin_usuario()
+    if usuario != atual and _erro_nome_usuario(usuario):
+        return erro(3, _erro_nome_usuario(usuario))
+    if _erro_senha(senha):
+        return erro(3, _erro_senha(senha))
+    if senha == SENHA_FABRICA:
+        return erro(3, "Escolha uma senha diferente da de fábrica.")
+    if senha == senha_root:
+        return erro(3, "Use uma senha diferente da senha do root.")
+
+    if usuario != atual:
+        r = renomear_usuario(usuario, destacar=False)
+        if not r["ok"]:
+            return erro(3, r["erro"])
+    rc, _, err = _run(["usermod", "-c", f"{nome} {sobrenome}", usuario], 20)
+    if rc != 0:
+        return erro(2, f"Não gravou o nome: {err[:120]}")
+    rc, _, err = _run(["chpasswd"], entrada=f"root:{senha_root}\n")
+    if rc != 0:
+        return erro(1, f"Não trocou a senha do root: {err[:120]}")
+    # por último: enquanto a senha do usuário for a de fábrica, o cadastro
+    # continua aparecendo e dá pra refazer o que faltou
+    r = set_password(senha)
+    if not r["ok"]:
+        return erro(3, r["erro"])
+    return {"ok": True, "usuario": usuario, "nome": nome,
+            "aviso": f"Cadastro concluído. Usuário {usuario}."}
 
 
 # --------------------------------------------------------------- dispatch
@@ -1042,6 +1229,7 @@ ACOES = {
     "connect-wifi": lambda a: connect_wifi(a.get("ssid"), a.get("senha")),
     "list-wifi": lambda a: listar_wifi(),
     "set-password": lambda a: set_password(a.get("senha", "")),
+    "renomear-usuario": lambda a: renomear_usuario(a.get("nome", "")),
     "config-show": lambda a: config_show(),
     "config-aplicar": lambda a: config_aplicar(),
     "backup": lambda a: backup(),

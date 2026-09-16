@@ -12,6 +12,7 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle wifi --list
   sudo opendongle mode-hotspot
   sudo opendongle senha --nova umaSenhaForte
+  sudo opendongle usuario --novo lucas
   sudo opendongle diagnostico
   sudo opendongle recursos
   sudo opendongle config show|aplicar
@@ -95,6 +96,9 @@ def main():
 
     p = sub.add_parser("senha", help="troca a senha de administração")
     p.add_argument("--nova", required=True)
+
+    p = sub.add_parser("usuario", help="troca o nome do usuário de administração")
+    p.add_argument("--novo", required=True)
 
     sub.add_parser("diagnostico",
                    help="testa áudio, Bluetooth, vídeo USB e modem 4G")
@@ -229,6 +233,8 @@ def main():
         res = eng.mode_hotspot()
     elif args.cmd == "senha":
         res = eng.set_password(args.nova)
+    elif args.cmd == "usuario":
+        res = eng.renomear_usuario(args.novo)
     elif args.cmd == "config":
         if args.acao == "set":
             if not args.atribuicoes:

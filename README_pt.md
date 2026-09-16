@@ -83,6 +83,21 @@ Para quem quer entender ou usar peça por peça:
 
 ---
 
+## 👋 Primeiro uso (usuário final)
+
+O dongle sai da instalação com o usuário `user` e a senha `1`. Quem instala pelo
+cabo USB troca isso pelo SSH ou pelo painel. Quem recebe o dongle pronto e liga
+na tomada (porta USB em modo **host**) abre o painel e, **enquanto a senha
+ainda for `1`**, só vê o cadastro inicial, em três etapas:
+
+1. senha do root (digitada duas vezes);
+2. nome e sobrenome;
+3. nome de usuário e senha do painel (digitada duas vezes, diferente da do root).
+
+Ao concluir, o painel libera e já fica logado. Pelo USB o cadastro nunca aparece.
+
+---
+
 ## 🎛️ O comando `opendongle`
 
 O painel também é um comando de terminal no próprio dongle — a mesma lógica da interface web, no CLI:
@@ -93,6 +108,7 @@ sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
 sudo opendongle wifi --list                         # redes Wi-Fi visíveis
 sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
 sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
+sudo opendongle usuario --novo lucas                # troca o nome do usuário (mesmo UID, sudo e senha)
 sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
 sudo opendongle recursos                            # RAM usada por serviço
 sudo opendongle config show                         # config central (config aplicar pra reaplicar)

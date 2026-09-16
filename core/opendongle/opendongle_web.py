@@ -184,34 +184,38 @@ a.btn{{display:block;text-decoration:none;text-align:center}}
 .item small{{display:block;color:var(--mut);margin-top:2px}}.item .seta{{color:var(--mut)}}
 .seg{{display:flex;gap:6px}}.seg button{{margin:0;padding:10px;background:var(--sec);color:var(--tx)}}
 .seg button.atual{{background:var(--ac);color:#fff}}
+dialog{{background:var(--card);color:var(--tx);border:1px solid var(--br);border-radius:14px;
+ padding:20px;width:calc(100% - 32px);max-width:420px}}dialog::backdrop{{background:rgba(0,0,0,.6)}}
 </style>"""
 
 # (id, ícone, nome, rota). Ordem fixa: memória espacial vale mais que favoritos.
 CATEGORIAS = [("geral", "🖥️", "Geral", "/geral"),
               ("internet", "🌐", "Internet", "/internet"),
               ("dispositivos", "🔌", "Dispositivos", "/dispositivos"),
-              ("audio", "🎧", "Áudio", "/audio")]
+              ("audio", "🎧", "Áudio", "/audio"),
+              ("remoto", "🔗", "Acesso remoto", "/remoto")]
 CAT_AVANCADAS = ("avancadas", "🧰", "Opções avançadas", "/avancadas")
 _CAT_POR_ID = {c[0]: c for c in CATEGORIAS + [CAT_AVANCADAS]}
 
 # rota -> categoria (a rota decide onde a página "mora" na barra lateral)
 ROTAS_CATEGORIA = {
-    "geral": ("/geral", "/status", "/senha", "/set-password", "/sair", "/sessoes-encerrar",
+    "geral": ("/geral", "/status", "/senha", "/set-password", "/api/senha-verificar", "/sair", "/usuario-renomear",
               "/sistema", "/restaurar", "/reset", "/hora", "/hora-manual", "/espaco",
               "/espaco-analisar", "/espaco-liberar", "/desempenho", "/processo-encerrar",
               "/hardware", "/atualizacoes", "/atualizacoes-verificar",
               "/atualizacoes-instalar", "/energia"),
     "internet": ("/internet", "/hotspot", "/set-hotspot", "/mode-hotspot", "/wifi",
-                 "/modem", "/rede", "/lan", "/firewall", "/fw-set", "/tor", "/remoto",
+                 "/modem", "/rede", "/lan", "/firewall", "/fw-set", "/tor",
                  "/confirmar", "/rede-confirmar"),
     "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led", "/usb", "/usb-papel"),
     "audio": ("/audio", "/audio-test"),
+    "remoto": ("/remoto", "/sessoes-encerrar", "/sessao-encerrar"),
     "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos", "/servicos",
                   "/servico-set", "/kernel", "/config-arquivo"),
 }
 _PREFIXOS_CATEGORIA = (("/bt-", "dispositivos"), ("/modem-", "internet"),
                        ("/fixo-", "internet"), ("/redir-", "internet"),
-                       ("/remoto-", "internet"), ("/audio-", "audio"))
+                       ("/remoto-", "remoto"), ("/audio-", "audio"))
 
 
 def categoria_da_rota(path):
@@ -242,7 +246,7 @@ def _nav():
         f"<span>{ic}</span>{nome}</a>" for cid, ic, nome, rota in cats) + "</nav>"
 
 
-def page(corpo, titulo="OpenDongle"):
+def page(corpo, titulo="OpenDongle", nav=True):
     cat = _CAT_POR_ID.get(_ctx("categoria"))
     volta = ""
     if cat and _ctx("path") != cat[3]:   # página de detalhe: volta pra categoria
@@ -252,7 +256,7 @@ def page(corpo, titulo="OpenDongle"):
             f"<meta charset='utf-8'><meta name='viewport' content='width=device-width,"
             f"initial-scale=1'><title>{html.escape(titulo)}</title>{ESTILO}</head><body>"
             f"<div class='topo'><a href='/'>🔌 OpenDongle</a></div>"
-            f"<div class='app'>{_nav()}<main>{volta}{corpo}</main></div>"
+            f"<div class='app'>{_nav() if nav else ''}<main>{volta}{corpo}</main></div>"
             f"{SCRIPT_ENVIO}</body></html>").encode()
 
 
@@ -270,8 +274,8 @@ def item(icone, titulo, sub="", url=None, extra=""):
 SCRIPT_ENVIO = """<div id='carregando' style='display:none;position:fixed;inset:0;
  background:rgba(11,18,32,.7);color:#fff;align-items:center;justify-content:center;
  font:600 1.1em system-ui,sans-serif;z-index:9'>Carregando…</div>
-<script>document.addEventListener('submit',function(){
- document.getElementById('carregando').style.display='flex'});
+<script>document.addEventListener('submit',function(e){
+ if(!e.defaultPrevented)document.getElementById('carregando').style.display='flex'});
 window.addEventListener('pageshow',function(){
  document.getElementById('carregando').style.display='none'});</script>"""
 
@@ -377,7 +381,7 @@ def tela_status():
 # Índice de busca com sinônimos coloquiais (título, rota, palavras).
 BUSCA = [
     ("Status e saúde do sistema", "/status", "status saude cpu ram memoria disco temperatura ligado internet"),
-    ("Conta, senha e sessões", "/senha", "senha admin trocar password login entrar sair sessao usuario conta"),
+    ("Conta e senha", "/senha", "senha admin trocar password login entrar sair usuario nome de usuario renomear conta sudo"),
     ("Data, hora e fuso horário", "/hora", "data hora relogio errada fuso horario ntp automatica"),
     ("Espaço em disco", "/espaco", "espaco disco cheio armazenamento liberar limpar ocupando pesado"),
     ("Desempenho (CPU, RAM e processos)", "/desempenho", "desempenho htop cpu ram memoria processos lento travando encerrar"),
@@ -392,7 +396,7 @@ BUSCA = [
     ("LAN, DHCP e IP fixo", "/rede", "lan dhcp ip fixo reservar aparelhos conectados clientes"),
     ("Firewall e portas", "/firewall", "firewall porta redirecionar abrir ssh bloquear"),
     ("Navegação via Tor", "/tor", "tor anonimo privacidade onion"),
-    ("Acesso remoto (Tailscale)", "/remoto", "remoto tailscale vpn acessar de longe exit node"),
+    ("Acesso remoto e sessões abertas", "/remoto", "remoto tailscale vpn acessar de longe exit node sessao sessoes ssh derrubar encerrar quem esta conectado"),
     ("Bluetooth", "/bluetooth", "bluetooth parear fone caixa teclado mouse controle conectar visivel"),
     ("Aparelhos USB e porta USB", "/usb", "usb pendrive webcam camera teclado mouse periferico host otg porta"),
     ("LEDs", "/leds", "led luz luzes piscar"),
@@ -456,7 +460,7 @@ def tela_geral():
                                                   ("escuro", "Escuro")))
     return page(f"""
       <div class='card'><h1>🖥️ Geral</h1>
-        {item("🔑", "Conta e senha", "Senha, sair e sessões abertas", "/senha")}
+        {item("🔑", "Conta e senha", "Trocar a senha e sair do painel", "/senha")}
         {item("🕒", "Data e hora", "Hora automática, ajuste manual e fuso", "/hora")}
         {item("🔄", "Atualizações", "Correções e melhorias do sistema", "/atualizacoes")}
       </div>
@@ -518,9 +522,8 @@ def tela_internet():
         {item("🌐", "LAN, DHCP e IP fixo", f"IP do dongle {cfg['lan']['ip']}", "/rede")}
         {item("🧱", "Firewall e portas", f"{len(cfg['firewall']['redirecionamentos'])} redirecionamento(s)", "/firewall")}
       </div>
-      <div class='card'><h2>Privacidade e acesso de longe</h2>
+      <div class='card'><h2>Privacidade</h2>
         {item("🧅", "Navegação via Tor", lig(cfg['tor']['ativo']), "/tor")}
-        {item("🔗", "Acesso remoto (Tailscale)", lig(cfg['remoto']['ativo']), "/remoto")}
       </div>""", "Internet")
 
 
@@ -662,6 +665,110 @@ def tela_wifi(erro=""):
       </div>""")
 
 
+# ---------- primeiro uso (usuário final, dongle na tomada) ----------
+_PENDENTE = {"shadow": None, "valor": False}
+
+
+def cadastro_pendente():
+    """Modo host com a senha de fábrica. O crypt é caro no dongle: só
+    recalcula quando o /etc/shadow muda."""
+    if not eng.modo_host():
+        return False
+    try:
+        marca = os.stat("/etc/shadow").st_mtime_ns
+    except OSError:
+        return False
+    if _PENDENTE["shadow"] != marca:
+        _PENDENTE.update(shadow=marca, valor=_checa_admin(eng.SENHA_FABRICA))
+    return _PENDENTE["valor"]
+
+
+SCRIPT_CADASTRO = """<script>(function(){
+ const f=document.getElementById('cad'),passos=f.querySelectorAll('.passo'),
+  er=document.getElementById('cad-erro'),barra=document.getElementById('cad-etapa');
+ let atual=+f.dataset.etapa||1;
+ const mostra=n=>{atual=n;passos.forEach((p,i)=>p.style.display=i+1===n?'block':'none');
+  barra.textContent='Etapa '+n+' de '+passos.length;const c=passos[n-1].querySelector('input');
+  if(c)c.focus()};
+ const erro=t=>{er.textContent=t;er.style.display=t?'block':'none'};
+ const confere=n=>{const p=passos[n-1];
+  for(const c of p.querySelectorAll('input')){if(!c.checkValidity()){c.reportValidity();return false}}
+  const d=p.querySelectorAll('input[type=password]');
+  if(d.length===2&&d[0].value!==d[1].value){erro('As duas senhas não são iguais.');d[1].focus();return false}
+  erro('');return true};
+ f.querySelectorAll('.avancar').forEach(b=>b.onclick=()=>{if(confere(atual)){
+  if(atual===2){const u=document.getElementById('cad-usuario');if(!u.dataset.mexeu)
+   u.value=(document.getElementById('cad-nome').value.normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().replace(/[^a-z0-9]/g,'')||u.value)}
+  mostra(atual+1)}});
+ f.querySelectorAll('.voltar').forEach(b=>b.onclick=()=>{erro('');mostra(atual-1)});
+ document.getElementById('cad-usuario').addEventListener('input',e=>e.target.dataset.mexeu=1);
+ f.addEventListener('submit',ev=>{if(!confere(atual)){ev.preventDefault()}});
+ mostra(atual);
+})();</script>"""
+
+
+def tela_cadastro(r=None, dados=None):
+    d = dados or {}
+    etapa = (r or {}).get("etapa", 1)
+    usuario = d.get("usuario") or eng.admin_usuario()
+    senha = lambda nome, rotulo, auto: (
+        f"<label>{rotulo}</label><input name='{nome}' type='password' minlength='6' "
+        f"autocomplete='{auto}' required>")
+    return page(f"""
+      <div class='card'>
+        <h1>👋 Bem-vindo ao seu OpenDongle</h1>
+        <p>Antes de usar, crie as suas senhas. Leva um minuto e protege o
+        dongle de quem estiver na mesma rede Wi-Fi.</p>
+        <p id='cad-etapa' style='color:var(--mut)'></p>
+        <div id='cad-erro' class='msg er' style='display:{"block" if r and not r["ok"] else "none"}'>{_e((r or {}).get("erro", ""))}</div>
+        <form id='cad' method='post' action='/cadastro' data-etapa='{int(etapa)}'>
+          <div class='passo'>
+            <h2>🛡️ Senha do root</h2>
+            <p>O root é a conta de manutenção do sistema. Guarde esta senha num
+            lugar seguro: você quase nunca vai precisar dela.</p>
+            {senha("senha_root", "Senha do root (mín. 6)", "new-password")}
+            {senha("senha_root2", "Repita a senha do root", "new-password")}
+            <button type='button' class='avancar'>Continuar</button>
+          </div>
+          <div class='passo' style='display:none'>
+            <h2>🙂 Seu nome</h2>
+            <label>Nome</label>
+            <input id='cad-nome' name='nome' maxlength='40' value='{_e(d.get("nome", ""))}'
+                   autocomplete='given-name' required>
+            <label>Sobrenome</label>
+            <input name='sobrenome' maxlength='40' value='{_e(d.get("sobrenome", ""))}'
+                   autocomplete='family-name' required>
+            <div class='row'><button type='button' class='sec voltar'>Voltar</button>
+              <button type='button' class='avancar'>Continuar</button></div>
+          </div>
+          <div class='passo' style='display:none'>
+            <h2>🔑 Seu acesso</h2>
+            <p>Com este usuário e senha você entra neste painel.</p>
+            <label>Nome de usuário</label>
+            <input id='cad-usuario' name='usuario' value='{_e(usuario)}' minlength='3' maxlength='32'
+                   pattern='[a-z][a-z0-9_\\-]{{2,31}}' autocapitalize='none' autocorrect='off'
+                   spellcheck='false' autocomplete='username' required>
+            <small style='color:var(--mut)'>Letras minúsculas, números, - ou _.</small>
+            {senha("senha", "Senha (mín. 6, diferente da do root)", "new-password")}
+            {senha("senha2", "Repita a senha", "new-password")}
+            <div class='row'><button type='button' class='sec voltar'>Voltar</button>
+              <button>Concluir</button></div>
+          </div>
+        </form>
+      </div>{SCRIPT_CADASTRO}""", "Bem-vindo", nav=False)
+
+
+def tela_cadastro_ok(r):
+    return page(f"""
+      <div class='card'>
+        <h1>✅ Tudo pronto, {_e(r["nome"])}!</h1>
+        <p>Seu dongle está protegido. De agora em diante, entre no painel com o
+        usuário <b>{_e(r["usuario"])}</b> e a senha que você acabou de criar.</p>
+        <a class='btn' href='/'><button>Abrir o painel</button></a>
+      </div>""", "Tudo pronto", nav=False)
+
+
 def tela_login(m="", voltar="/"):
     return page(f"""
       <div class='card'>
@@ -710,37 +817,95 @@ def tela_hotspot(m="", erro=False):
       </div>""", "Wi-Fi e hotspot")
 
 
+# Janelas de troca (senha e nome de usuário), iguais nas duas etapas:
+# 1) confere a senha atual no servidor; 2) valor novo digitado duas vezes.
+# O servidor confere tudo de novo no envio.
+SCRIPT_DUPLA = """<script>(function(){
+ document.querySelectorAll('dialog.dupla').forEach(d=>{
+  const e1=d.querySelector('.e1'),e2=d.querySelector('.e2'),er=d.querySelector('.msg'),
+   atual=e1.querySelector('input'),v=e2.querySelectorAll('.v');
+  const erro=t=>{er.textContent=t;er.style.display=t?'block':'none'};
+  document.getElementById(d.dataset.botao).onclick=()=>{e1.style.display='block';
+   e2.style.display='none';atual.value='';v.forEach(x=>x.value='');erro('');d.showModal();atual.focus()};
+  d.querySelectorAll('.fechar').forEach(b=>b.onclick=()=>d.close());
+  e1.addEventListener('submit',ev=>{ev.preventDefault();const b=e1.querySelector('[type=submit]');
+   b.disabled=true;erro('');
+   fetch('/api/senha-verificar',{method:'POST',body:new URLSearchParams({atual:atual.value})})
+    .then(r=>r.json()).then(j=>{if(j.ok){e2.querySelector('[name=atual]').value=atual.value;
+      e1.style.display='none';e2.style.display='block';v[0].focus()}else erro(j.erro)})
+    .catch(()=>erro('Sem resposta do dongle (a sessão pode ter expirado). Recarregue a página.'))
+    .finally(()=>b.disabled=false)});
+  e2.addEventListener('submit',ev=>{if(v[0].value!==v[1].value){ev.preventDefault();
+   erro(d.dataset.difere);v[1].focus()}else d.close()});
+ });
+})();</script>"""
+
+
+def _dialogo_dupla(id_, botao, titulo, acao, rotulo, nome, tipo, extra_attrs, difere, extra="", aviso=""):
+    campo = (f"<input class='v' name='{nome}' type='{tipo}' {extra_attrs} required>")
+    campo2 = (f"<input class='v' name='confirmacao' type='{tipo}' {extra_attrs} required>")
+    return f"""
+      <dialog id='{id_}' class='dupla' data-botao='{botao}' data-difere='{_e(difere)}'>
+        <h2 style='margin-top:0'>{titulo}</h2>
+        <div class='msg er' style='display:none'></div>
+        <form class='e1'>
+          <label>Senha atual</label>
+          <input type='password' autocomplete='current-password' required>
+          <div class='row'><button type='button' class='sec fechar'>Cancelar</button>
+            <button type='submit'>Continuar</button></div>
+        </form>
+        <form class='e2' method='post' action='{acao}' style='display:none'>
+          <input type='hidden' name='atual'>
+          <label>{rotulo}</label>{campo}
+          <label>Repita</label>{campo2}
+          {extra}{aviso}
+          <div class='row'><button type='button' class='sec fechar'>Cancelar</button>
+            <button type='submit'>Confirmar</button></div>
+        </form>
+      </dialog>"""
+
+
 def tela_senha(m="", erro=False):
-    sess = sis.sessoes()["sessoes"]
-    linhas = "".join(item("🖥️" if x["tty"] else "🌐", f"{x['usuario']} · {x['servico'] or x['tty']}",
-                          " · ".join(v for v in (x["origem"] and f"de {x['origem']}", x["desde"]) if v))
-                     for x in sess) or "<p>Nenhuma sessão de SSH ou console aberta.</p>"
+    usuario = eng.admin_usuario()
+    encerrar = ("<label style='display:flex;gap:10px;align-items:center;margin-top:12px'>"
+                "<input type='checkbox' name='encerrar_outras' value='1' style='width:auto'>"
+                "Encerrar as sessões do painel em outros aparelhos</label>")
     return page(f"""
       <div class='card'>
         <h1>🔑 Conta e senha</h1>
-        {item("👤", eng.ADMIN_USER, "Usuário de administração do dongle")}
+        {item("👤", usuario, (eng.nome_completo() + " · " if eng.nome_completo() else "") +
+              "Usuário de administração do dongle (tem sudo)")}
         {msg(m, 'er' if erro else 'ok')}
       </div>
       <div class='card'>
-        <h2>Trocar senha</h2>
-        <p>É a senha deste painel e do SSH. Ao trocar, as outras sessões do painel
-        são encerradas.</p>
-        <form method='post' action='/set-password'>
-          <label>Nova senha (mín. 6)</label>
-          <input name='senha' type='password' minlength='6' required>
-          <button>Trocar senha</button>
-        </form>
+        <h2>Senha de administração</h2>
+        <p>É a senha deste painel, do SSH e do sudo.</p>
+        <button type='button' id='senha-abrir'>Trocar senha</button>
       </div>
       <div class='card'>
-        <h2>Sessões</h2>
-        {linhas}
-        <div class='row'>
-          <form method='post' action='/sair'><button class='sec'>Sair do painel</button></form>
-          <form method='post' action='/sessoes-encerrar'
-                onsubmit="return confirm('Encerrar todas as sessões do painel em outros aparelhos?')">
-            <button class='sec'>Encerrar outras sessões do painel</button></form>
-        </div>
-      </div>""", "Conta e senha")
+        <h2>Nome de usuário</h2>
+        <p>É o nome usado pra entrar no SSH (<b>{_e(usuario)}@opendongle.local</b>).</p>
+        <button type='button' id='usuario-abrir' class='sec'>Trocar nome de usuário</button>
+      </div>
+      <div class='card'>
+        <h2>Sair</h2>
+        <p>As sessões abertas (painel e SSH) ficam em <a style='color:var(--ac)'
+        href='/remoto'>Acesso remoto</a>.</p>
+        <form method='post' action='/sair'><button class='sec'>Sair do painel</button></form>
+      </div>
+      {_dialogo_dupla("dlg-senha", "senha-abrir", "Trocar senha", "/set-password",
+                      "Nova senha (mín. 6)", "nova", "password",
+                      "minlength='6' autocomplete='new-password'",
+                      "As duas senhas não são iguais.", extra=encerrar)}
+      {_dialogo_dupla("dlg-usuario", "usuario-abrir", "Trocar nome de usuário", "/usuario-renomear",
+                      "Novo nome", "novo", "text",
+                      "minlength='3' maxlength='32' pattern='[a-z][a-z0-9_\\-]{2,31}' "
+                      "autocapitalize='none' autocorrect='off' spellcheck='false' autocomplete='off'",
+                      "Os dois nomes não são iguais.",
+                      aviso="<div class='aviso'>Letras minúsculas, números, - ou _. As sessões SSH "
+                            "deste usuário serão encerradas; a senha continua a mesma. O painel "
+                            "continua aberto.</div>")}
+      {SCRIPT_DUPLA}""", "Conta e senha")
 
 
 def tela_hora(r=None):
@@ -1542,6 +1707,7 @@ def tela_remoto(r=None):
     return page(f"""
       <div class='card'>
         <h1>🔗 Acesso remoto</h1>
+        <h2>Tailscale</h2>
         {estado}{_resultado(r)}{_cartao_tarefa("remoto", r)}
         <p>Com o Tailscale, você acessa este dongle de qualquer lugar, sem abrir
         portas no roteador nem precisar de IP público (funciona até no 4G).</p>
@@ -1554,7 +1720,30 @@ def tela_remoto(r=None):
           {instalar}
           <button>{'Salvar' if st['ativo'] else 'Ligar acesso remoto'}</button>
         </form>
-      </div>{acoes}{_voltar()}""")
+      </div>{acoes}{_cartao_sessoes()}""", "Acesso remoto")
+
+
+def _cartao_sessoes():
+    linhas = ""
+    for x in sis.sessoes()["sessoes"]:
+        detalhe = " · ".join(v for v in (x["origem"] and f"de {x['origem']}", x["desde"]) if v)
+        botao = (f"<form method='post' action='/sessao-encerrar' style='margin:0' onsubmit=\"return "
+                 f"confirm('Encerrar esta sessão? Quem estiver nela é desconectado.')\">"
+                 f"<input type='hidden' name='id' value='{_e(x['id'])}'>"
+                 f"<button class='sec' style='width:auto;margin:0;padding:6px 12px'>Encerrar"
+                 f"</button></form>")
+        linhas += item("🖥️" if x["tty"] else "🌐",
+                       f"{x['usuario']} · {x['servico'] or x['tty']}", detalhe,
+                       extra=f"<div class='acoes'>{botao}</div>")
+    return f"""
+      <div class='card'>
+        <h2>Sessões abertas</h2>
+        <p>Quem está conectado por SSH ou pelo console serial agora.</p>
+        {linhas or "<p>Nenhuma sessão de SSH ou console aberta.</p>"}
+        <form method='post' action='/sessoes-encerrar'
+              onsubmit="return confirm('Encerrar o painel em todos os outros aparelhos?')">
+          <button class='sec'>Encerrar o painel em outros aparelhos</button></form>
+      </div>"""
 
 
 def tela_confirmar(r=None):
@@ -1633,6 +1822,9 @@ class Painel(BaseHTTPRequestHandler):
         if host not in ("opendongle.local", "opendongle") and not _eh_ip(host):
             return self._redir(f"http://{ip}/")
         self._contexto(path)
+        if cadastro_pendente():
+            _CTX.categoria = None
+            return self._send(tela_cadastro())
         publicas = {"/": tela_inicio, "/status": tela_status, "/wifi": tela_wifi,
                     "/geral": tela_geral, "/internet": tela_internet,
                     "/dispositivos": tela_dispositivos, "/confirmar": tela_confirmar}
@@ -1692,6 +1884,21 @@ class Painel(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         f = self._form()
         self._contexto(path)
+        if cadastro_pendente():
+            _CTX.categoria = None
+            if path != "/cadastro":
+                return self._redir("/")
+            dados = {k: f.get(k, "") for k in ("nome", "sobrenome", "usuario")}
+            if f.get("senha_root", "") != f.get("senha_root2", ""):
+                r = {"ok": False, "etapa": 1, "erro": "As duas senhas do root não são iguais."}
+            elif f.get("senha", "") != f.get("senha2", ""):
+                r = {"ok": False, "etapa": 3, "erro": "As duas senhas não são iguais."}
+            else:
+                r = eng.cadastro_inicial(f.get("senha_root"), dados["nome"], dados["sobrenome"],
+                                         dados["usuario"], f.get("senha"))
+            if not r["ok"]:
+                return self._send(tela_cadastro(r, dados))
+            return self._send(tela_cadastro_ok(r), extra={"Set-Cookie": _cookie_sessao()})
         if path == "/login":
             # senha conferida contra /etc/shadow (a mesma do sistema)
             voltar = f.get("voltar") or "/"
@@ -1785,8 +1992,23 @@ class Painel(BaseHTTPRequestHandler):
             return self._redir("/", "s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
         if path == "/sessoes-encerrar":
             _chave(renovar=True)
-            return self._send(tela_senha("As outras sessões do painel foram encerradas."),
+            return self._send(tela_remoto({"ok": True, "aviso": "O painel foi encerrado nos outros aparelhos."}),
                               extra={"Set-Cookie": _cookie_sessao()})
+        if path == "/sessao-encerrar":
+            return self._send(tela_remoto(sis.encerrar_sessao(f.get("id"))))
+        if path == "/usuario-renomear":
+            if not _checa_admin(f.get("atual", "")):
+                time.sleep(1)
+                return self._send(tela_senha("Senha atual incorreta.", erro=True))
+            if f.get("novo", "").strip() != f.get("confirmacao", "").strip():
+                return self._send(tela_senha("Os dois nomes não são iguais.", erro=True))
+            r = eng.renomear_usuario(f.get("novo", ""))
+            return self._send(tela_senha(r["aviso"] if r["ok"] else r["erro"], erro=not r["ok"]))
+        if path == "/api/senha-verificar":
+            if _checa_admin(f.get("atual", "")):
+                return self._send_json({"ok": True})
+            time.sleep(1)   # freia quem tenta adivinhar
+            return self._send_json({"ok": False, "erro": "Senha atual incorreta."})
         if path == "/set-hotspot":
             r = eng.set_hotspot(f.get("ssid"), f.get("senha"))
             return self._send(tela_hotspot(r.get("aviso") if r["ok"] else r["erro"],
@@ -1796,12 +2018,21 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_hotspot("Hotspot ativado." if r["ok"] else r["erro"],
                                            erro=not r["ok"]))
         if path == "/set-password":
-            r = eng.set_password(f.get("senha", ""))
+            if not _checa_admin(f.get("atual", "")):
+                time.sleep(1)
+                return self._send(tela_senha("Senha atual incorreta.", erro=True))
+            if f.get("nova", "") != f.get("confirmacao", ""):
+                return self._send(tela_senha("As duas senhas não são iguais.", erro=True))
+            r = eng.set_password(f.get("nova", ""))
             if not r["ok"]:
                 return self._send(tela_senha(r["erro"], erro=True))
-            # senha nova derruba todas as outras sessões; esta ganha uma nova
+            # vale na hora; esta sessão continua. Os outros aparelhos só
+            # saem se a pessoa pediu (troca a chave e reemite o cookie daqui)
+            if f.get("encerrar_outras") != "1":
+                return self._send(tela_senha(r.get("aviso") or "Senha trocada."))
             _chave(renovar=True)
-            return self._send(tela_senha(r.get("aviso")),
+            return self._send(tela_senha((r.get("aviso") or "Senha trocada.") +
+                                         " O painel foi encerrado nos outros aparelhos."),
                               extra={"Set-Cookie": _cookie_sessao()})
         acoes_bt = {"/bt-ligar": lambda: bt.ligar(f.get("ligar") == "1"),
                     "/bt-visivel": lambda: bt.visivel(f.get("ligar") == "1"),
@@ -1908,7 +2139,7 @@ def _checa_admin(senha):
     try:
         import ctypes
         import hmac
-        reg = _hash_shadow(eng.ADMIN_USER)
+        reg = _hash_shadow(eng.admin_usuario())
         if not reg or reg in ("", "!", "*", "!!"):
             return False
         libc = ctypes.CDLL("libcrypt.so.1")
