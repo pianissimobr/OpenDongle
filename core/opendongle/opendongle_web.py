@@ -18,6 +18,7 @@ Autenticação: as ações de mudança exigem login com a senha de admin
 """
 
 import base64
+import copy
 import hashlib
 import hmac
 import html
@@ -205,7 +206,8 @@ ROTAS_CATEGORIA = {
                  "/confirmar", "/rede-confirmar"),
     "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led", "/usb", "/usb-papel"),
     "audio": ("/audio", "/audio-test"),
-    "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos"),
+    "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos", "/servicos",
+                  "/servico-set", "/kernel", "/config-arquivo"),
 }
 _PREFIXOS_CATEGORIA = (("/bt-", "dispositivos"), ("/modem-", "internet"),
                        ("/fixo-", "internet"), ("/redir-", "internet"),
@@ -394,7 +396,9 @@ BUSCA = [
     ("Bluetooth", "/bluetooth", "bluetooth parear fone caixa teclado mouse controle conectar visivel"),
     ("Aparelhos USB e porta USB", "/usb", "usb pendrive webcam camera teclado mouse periferico host otg porta"),
     ("LEDs", "/leds", "led luz luzes piscar"),
-    ("Áudio", "/audio", "audio som fone microfone volume"),
+    ("Áudio", "/audio", "audio som fone microfone volume placa"),
+    ("Serviços do sistema (avançado)", "/servicos", "servico servicos boot inicializacao systemd desligar ligar daemon"),
+    ("Kernel e módulos (avançado)", "/kernel", "kernel modulo modulos driver lsmod versao cmdline"),
 ]
 
 
@@ -535,11 +539,87 @@ def tela_avancadas():
         {item("📜", "Logs do sistema", "journalctl por serviço", "/logs")}
         {item("🩺", "Diagnóstico de hardware", "Áudio, Bluetooth, vídeo USB e modem", "/diagnostico")}
         {item("🧮", "Memória por serviço", "RAM de cada serviço (PSS)", "/recursos")}
+        {item("⚙️", "Serviços do sistema", "O que sobe no boot: ligar e desligar", "/servicos")}
+        {item("🐧", "Kernel e módulos", "Versão, parâmetros de boot e módulos carregados", "/kernel")}
+        {item("🗂️", "Arquivo de configuração", "A config central (senhas ocultas)", "/config-arquivo")}
       </div>
       <div class='card'>
         <button class='sec' type='button' onclick="document.cookie='avancadas=;path=/;max-age=0';
           location.href='/geral'">Ocultar opções avançadas</button>
       </div>""", "Opções avançadas")
+
+
+def tela_servicos(r=None):
+    lst = sis.servicos()["servicos"]
+
+    def linha(x):
+        estado = ("rodando" if x["rodando"] else "parado") + (" · sobe no boot" if x["habilitado"] else "")
+        if x["ram_mb"]:
+            estado += f" · {x['ram_mb']} MB"
+        if x["essencial"]:
+            acao = "<span class='badge b-ok'>essencial</span>"
+        elif x["gerenciado"]:
+            acao = f"<a class='badge b-av' style='text-decoration:none' href='{x['gerenciado_url']}'>gerenciado ›</a>"
+            estado += f" · controlado em {x['gerenciado']}"
+        else:
+            ligado = x["habilitado"] or x["rodando"]
+            confirma = (f"Desligar {x['nome']}? " + (x["aviso"] or "")).replace("'", "")
+            acao = (f"<form method='post' action='/servico-set' style='margin:0'"
+                    + (f" onsubmit=\"return confirm('{_e(confirma)}')\"" if ligado else "") + ">"
+                    f"<input type='hidden' name='nome' value='{_e(x['nome'])}'>"
+                    f"<input type='hidden' name='ligar' value='{'0' if ligado else '1'}'>"
+                    f"<button class='sec' style='width:auto;margin:0;padding:6px 12px'>"
+                    f"{'Desligar' if ligado else 'Ligar'}</button></form>")
+        aviso = f" · {x['aviso']}" if x["aviso"] else ""
+        return (f"<div class='item'><span class='ic'>{'🟢' if x['rodando'] else '⚪'}</span>"
+                f"<span class='tx'>{_e(x['nome'])}<small>{_e(estado + aviso)}</small></span>"
+                f"<span class='acoes'>{acao}</span></div>")
+    livres = [x for x in lst if not x["essencial"] and not x["gerenciado"]]
+    outros = [x for x in lst if x["essencial"] or x["gerenciado"]]
+    return page(f"""
+      <div class='card'><h1>⚙️ Serviços do sistema</h1>{_resultado(r)}
+        <p>Serviços que sobem no boot ou estão rodando. Desligar libera RAM, mas o que
+        o serviço faz para de funcionar.</p>
+        {"".join(linha(x) for x in livres) or "<p>Nenhum serviço opcional.</p>"}
+      </div>
+      <div class='card'><h2>Essenciais e gerenciados</h2>
+        <p style='font-size:.85em'>Os essenciais não podem ser desligados por aqui; os gerenciados
+        são ligados e desligados pela tela deles.</p>
+        {"".join(linha(x) for x in outros)}
+      </div>""", "Serviços do sistema")
+
+
+def tela_kernel():
+    k = sis.kernel()
+    no_boot = set(k["no_boot"])
+    mods = "".join(item("🧩", m["nome"], f"{m['kb']} KB · usado por {', '.join(m['usado_por']) or m['usos']}"
+                        + (" · carregado no boot pelo OpenDongle" if m["nome"] in no_boot else ""))
+                   for m in k["modulos"])
+    return page(f"""
+      <div class='card'><h1>🐧 Kernel e módulos</h1>
+        {item("🐧", k["versao"], f"{k['arquitetura']} · {k['build']}")}
+        <label>Parâmetros de boot</label>
+        <pre style='white-space:pre-wrap;font-size:.75em;color:var(--mut);margin:0'>{_e(k['cmdline'])}</pre>
+      </div>
+      <div class='card'><h2>Módulos carregados ({len(k['modulos'])})</h2>{mods}</div>""", "Kernel e módulos")
+
+
+def tela_config_arquivo():
+    r = eng.config_show()
+    if not r["ok"]:
+        return page(f"<div class='card'>{msg(r['erro'], 'er')}</div>", "Arquivo de configuração")
+    cfg = copy.deepcopy(r["config"])
+    for secao in (cfg["wifi"]["hotspot"], cfg["wifi"]["cliente"]):
+        if secao.get("senha"):
+            secao["senha"] = "••••••••"
+    texto = json.dumps(cfg, ensure_ascii=False, indent=2)
+    return page(f"""
+      <div class='card'><h1>🗂️ Arquivo de configuração</h1>
+        <p>/etc/opendongle/config.json, de onde o dongle gera dnsmasq, firewall, rede, hostapd
+        e o resto. Senhas ocultas aqui; o backup completo fica em Geral › Nome, backup e reset.
+        Pra mudar pelo terminal: <code>sudo opendongle config set chave=valor</code>.</p>
+        <pre style='white-space:pre-wrap;font-size:.75em;color:var(--mut)'>{_e(texto)}</pre>
+      </div>""", "Arquivo de configuração")
 
 
 def tela_recursos():
@@ -1577,7 +1657,9 @@ class Painel(BaseHTTPRequestHandler):
                       "/hotspot": tela_hotspot, "/senha": tela_senha, "/leds": tela_leds,
                       "/avancadas": tela_avancadas, "/recursos": tela_recursos,
                       "/hora": tela_hora, "/espaco": tela_espaco, "/desempenho": tela_desempenho,
-                      "/hardware": tela_hardware, "/atualizacoes": tela_atualizacoes}
+                      "/hardware": tela_hardware, "/atualizacoes": tela_atualizacoes,
+                      "/servicos": tela_servicos, "/kernel": tela_kernel,
+                      "/config-arquivo": tela_config_arquivo}
         if path == "/api/desempenho":
             if not self._logado():
                 return self._send_json({"ok": False, "erro": "login"}, 403)
@@ -1736,6 +1818,8 @@ class Painel(BaseHTTPRequestHandler):
             # mensagem de erro aparece; as de sucesso já estão no próprio estado
             return self._send(tela_bluetooth(True, r if not r["ok"] or path in
                                              ("/bt-nome", "/bt-ligar", "/bt-visivel", "/bt-buscar") else None))
+        if path == "/servico-set":
+            return self._send(tela_servicos(sis.servico_set(f.get("nome", ""), f.get("ligar") == "1")))
         if path == "/usb-papel":
             return self._send(tela_usb(sis.usb_papel(f.get("papel"))))
         if path == "/modem-reconectar":

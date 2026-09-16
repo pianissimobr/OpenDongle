@@ -145,6 +145,10 @@ def main():
     p = sub.add_parser("usb", help="aparelhos USB plugados e papel da porta")
     p.add_argument("acao", nargs="?", default="status", choices=["status", "host", "device"])
 
+    p = sub.add_parser("servicos", help="serviços do boot (listar, ligar, desligar)")
+    p.add_argument("acao", nargs="?", default="listar", choices=["listar", "ligar", "desligar"])
+    p.add_argument("nome", nargs="?")
+
     sub.add_parser("hardware", help="placa, eMMC, rádios, modem e MACs")
 
     p = sub.add_parser("hora", help="data e hora (status, auto on|off, ajustar)")
@@ -339,6 +343,20 @@ def main():
                 return
         else:
             res = sis.usb_papel(args.acao)
+    elif args.cmd == "servicos":
+        if args.acao == "listar":
+            res = sis.servicos()
+            if not args.json:
+                for x in res["servicos"]:
+                    marca = "essencial" if x["essencial"] else (f"gerenciado: {x['gerenciado']}"
+                                                                if x["gerenciado"] else "livre")
+                    print(f"  {'●' if x['rodando'] else '○'} {x['nome']:<40} "
+                          f"{'boot' if x['habilitado'] else '    '} {x['ram_mb']:5.1f} MB  {marca}")
+                return
+        else:
+            if not args.nome:
+                ap.error("servicos ligar|desligar NOME")
+            res = sis.servico_set(args.nome, args.acao == "ligar")
     elif args.cmd == "hardware":
         res = sis.hardware()
         if not args.json:

@@ -491,6 +491,98 @@ def _trabalho_atualizar(instalar):
         "erro": "" if r.returncode == 0 else (r.stderr or r.stdout)[-200:]})
 
 
+# --------------------------------------------------------------- SERVIÇOS (avançadas)
+# Sem eles o dongle perde rede, acesso, modem ou proteção de memória.
+ESSENCIAIS = re.compile(r"^(ssh|sshd|dnsmasq|dbus|systemd-.+|hostapd@.+|wpa_supplicant@.+|"
+                        r"opendongle.*|usb-role-autosense|rmtfs|qrtr-ns|msm-.+|msm8916-.+|"
+                        r"nftables|earlyoom|zramswap|getty@.+|serial-getty@.+|user@.+|"
+                        r"polkit|resize-rootfs|regenerate-ssh-host-keys|sshd-keygen)\.service$")
+# têm tela própria, que decide quando ligar: mexer aqui brigaria com ela
+GERENCIADOS = {"bluetooth.service": ("Dispositivos › Bluetooth", "/bluetooth"),
+               "tor.service": ("Internet › Navegação via Tor", "/tor"),
+               "tor@default.service": ("Internet › Navegação via Tor", "/tor"),
+               "tailscaled.service": ("Internet › Acesso remoto", "/remoto"),
+               "dnsproxy.service": ("DNS criptografado (config dns.criptografado)", "/internet"),
+               "NetworkManager.service": ("rede (systemd-networkd)", "/internet"),
+               "networking.service": ("rede (systemd-networkd)", "/internet"),
+               "wpa_supplicant.service": ("rede (systemd-networkd)", "/internet")}
+# nunca aparecem nem podem ser ligados pelo painel: debug-shell abre shell de
+# root SEM senha no console; console-getty não se aplica a um dongle
+OCULTOS = {"debug-shell.service", "console-getty.service"}
+AVISOS_SERVICO = {"avahi-daemon.service": "Desligado, opendongle.local para de funcionar.",
+                  "cron.service": "Tarefas agendadas do sistema (limpeza de logs etc.)."}
+
+
+def servicos():
+    """Serviços habilitados no boot ou rodando, com RAM (PSS) e se dá pra mexer."""
+    _, arquivos, _ = _run(["systemctl", "list-unit-files", "--type=service", "--no-legend",
+                           "--no-pager"], 20)
+    habilitacao = {}
+    for linha in arquivos.splitlines():
+        p = linha.split()
+        if len(p) >= 2:
+            habilitacao[p[0]] = p[1]
+    _, units, _ = _run(["systemctl", "list-units", "--type=service", "--all", "--no-legend",
+                        "--no-pager", "--plain"], 20)
+    ativos = {}
+    for linha in units.splitlines():
+        p = linha.split(None, 4)
+        if len(p) >= 4:
+            ativos[p[0]] = p[2] == "active" and p[3] == "running"
+    import opendongle_engine as eng   # RAM por unit (mesma leitura do 'recursos')
+    ram = {s["unit"]: s["kb"] for s in eng.recursos()["servicos"]}
+    lista = []
+    for nome in sorted(set(habilitacao) | {n for n, a in ativos.items() if a}):
+        estado = habilitacao.get(nome, "")
+        rodando = ativos.get(nome, False)
+        # "disabled" entra: senão um serviço desligado por aqui some da lista e
+        # não dá pra religar (visto ao vivo com o cron). static/masked/alias não.
+        if not (rodando or estado in ("enabled", "disabled")) or "@." in nome or nome in OCULTOS:
+            continue
+        gerenciado = GERENCIADOS.get(nome)
+        lista.append({"nome": nome, "habilitado": estado == "enabled", "rodando": rodando,
+                      "ram_mb": round(ram.get(nome, 0) / 1024, 1),
+                      "essencial": bool(ESSENCIAIS.match(nome)),
+                      "gerenciado": gerenciado[0] if gerenciado else "",
+                      "gerenciado_url": gerenciado[1] if gerenciado else "",
+                      "aviso": AVISOS_SERVICO.get(nome, "")})
+    lista.sort(key=lambda s: (s["essencial"], bool(s["gerenciado"]), -s["ram_mb"], s["nome"]))
+    return {"ok": True, "servicos": lista}
+
+
+def servico_set(nome, ligar):
+    alvo = next((s for s in servicos()["servicos"] if s["nome"] == nome), None)
+    if not alvo:
+        return {"ok": False, "erro": "Serviço não encontrado."}
+    if alvo["essencial"]:
+        return {"ok": False, "erro": f"{nome} é essencial pro dongle e não pode ser desligado por aqui."}
+    if alvo["gerenciado"]:
+        return {"ok": False, "erro": f"{nome} é controlado em {alvo['gerenciado']}."}
+    rc, _, err = _run(["systemctl", "enable" if ligar else "disable", "--now", nome], 60)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não mudou: {err[:140]}"}
+    return {"ok": True, "aviso": f"{nome} {'ligado e habilitado no boot' if ligar else 'parado e desabilitado no boot'}."}
+
+
+# --------------------------------------------------------------- KERNEL
+def kernel():
+    modulos = []
+    for linha in _ler("/proc/modules").splitlines():
+        p = linha.split()
+        if len(p) >= 4:
+            usado_por = [x for x in p[3].split(",") if x and x != "-"]
+            modulos.append({"nome": p[0], "kb": int(p[1]) // 1024, "usos": int(p[2]),
+                            "usado_por": usado_por})
+    modulos.sort(key=lambda m: m["nome"])
+    carregar_no_boot = []
+    for arq in sorted(glob.glob("/etc/modules-load.d/*.conf")):
+        carregar_no_boot += [l.strip() for l in _ler(arq).splitlines()
+                             if l.strip() and not l.startswith("#")]
+    return {"ok": True, "versao": os.uname().release, "build": os.uname().version,
+            "arquitetura": os.uname().machine, "cmdline": _ler("/proc/cmdline"),
+            "modulos": modulos, "no_boot": carregar_no_boot}
+
+
 # --------------------------------------------------------------- TAREFAS LONGAS
 # Instalar pacotes (Tor, Tailscale, PipeWire) leva minutos: dentro da
 # requisição do painel a conexão cai no meio (o repassador larga depois de
