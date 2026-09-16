@@ -671,5 +671,9 @@ def _checa_admin(senha):
         return False
 
 
-if __name__ == "__main__":
+def servir():
     ThreadingHTTPServer(("0.0.0.0", 80), Painel).serve_forever()
+
+
+if __name__ == "__main__":
+    servir()

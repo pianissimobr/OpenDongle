@@ -13,6 +13,11 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle mode-hotspot
   sudo opendongle senha --nova umaSenhaForte
   sudo opendongle diagnostico
+  sudo opendongle recursos
+  sudo opendongle config show|aplicar
+  sudo opendongle backup > backup.json
+  sudo opendongle restaurar backup.json
+  sudo opendongle reset
 """
 
 import argparse
@@ -53,6 +58,8 @@ def imprime(res, cru=False):
             print(f"✓ ok — rede: {res['ssid']}")
         else:
             print("✓ ok")
+        if "mudou" in res:
+            print("  alterado: " + (", ".join(res["mudou"]) or "nada (já estava aplicado)"))
         if res.get("aviso"):
             print("  ⚠ " + res["aviso"])
 
@@ -82,8 +89,48 @@ def main():
     sub.add_parser("diagnostico",
                    help="testa áudio, Bluetooth, vídeo USB e modem 4G")
 
+    sub.add_parser("recursos", help="RAM usada por serviço")
+
+    p = sub.add_parser("config", help="mostra ou aplica a config central")
+    p.add_argument("acao", choices=["show", "aplicar"])
+
+    sub.add_parser("backup", help="imprime a config (redirecione pra um arquivo)")
+
+    p = sub.add_parser("restaurar", help="restaura e aplica um backup")
+    p.add_argument("arquivo")
+
+    sub.add_parser("reset", help="volta à configuração de fábrica")
+
     args = ap.parse_args()
     precisa_root()
+
+    if args.cmd == "backup":
+        res = eng.backup()
+        if not res["ok"]:
+            sys.exit("✗ " + res["erro"])
+        print(res["backup"])
+        return
+    if args.cmd == "config" and args.acao == "show" and not args.json:
+        res = eng.config_show()
+        if not res["ok"]:
+            sys.exit("✗ " + res["erro"])
+        print(json.dumps(res["config"], ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "recursos":
+        res = eng.recursos()
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False))
+            return
+        print(f"RAM disponível: {res['ram_disponivel_kb'] // 1024} MB "
+              f"de {res['ram_total_kb'] // 1024} MB  (métrica: {res['metrica']})")
+        total = 0
+        for s in res["servicos"]:
+            total += s["kb"]
+            if s["kb"] >= 512:
+                print(f"  {s['kb'] / 1024:6.1f} MB  {s['unit']}")
+        print(f"  {total / 1024:6.1f} MB  TOTAL em processos")
+        return
 
     if args.cmd == "diagnostico":
         resultados = diag.rodar_tudo()
@@ -104,6 +151,19 @@ def main():
         res = eng.mode_hotspot()
     elif args.cmd == "senha":
         res = eng.set_password(args.nova)
+    elif args.cmd == "config":
+        res = eng.config_show() if args.acao == "show" else eng.config_aplicar()
+    elif args.cmd == "restaurar":
+        try:
+            with open(args.arquivo) as f:
+                texto = f.read()
+        except OSError as e:
+            sys.exit(f"✗ não consegui ler {args.arquivo}: {e}")
+        res = eng.restaurar(texto)
+    elif args.cmd == "reset":
+        if input("Voltar à configuração de fábrica? Digite 'sim': ").strip() != "sim":
+            sys.exit("Cancelado.")
+        res = eng.reset()
     else:
         ap.error("comando desconhecido")
 

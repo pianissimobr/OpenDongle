@@ -6,14 +6,16 @@ instalar_opendongle.py — instala o painel OpenDongle no dongle (roda no PC)
 Coloca no dongle, via SSH:
   - motor único + CLI + painel web (em /opt/opendongle)
   - comando `opendongle` em /usr/local/bin (a CLI)
-  - serviço systemd do painel web (porta 80)
-  - serviço systemd do uplink guard (gateway condicional)
-  - serviço systemd dos LEDs (papel USB, modo Wi-Fi, internet, áudio)
-  - serviço systemd de descoberta na rede (responde probe UDP com o IP,
-    pra ferramentas/opendongle_localizar.py achar o dongle sem mDNS)
+  - um serviço systemd só (opendongle.service -> opendongled.py), com o
+    painel web (porta 80), o uplink guard (gateway condicional), os LEDs
+    (papel USB, modo Wi-Fi, internet, áudio) e a descoberta na rede
+    (responde probe UDP pra ferramentas/opendongle_localizar.py) como
+    threads do mesmo processo Python — economiza RAM
   - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
   - módulos do Bluetooth e LED triggers carregados em todo boot, e o
     bluetooth.service (bluetoothd) desmascarado e ativo
+  - config central em /etc/opendongle/config.json (migra SSID/senha/APNs
+    atuais) aplicada: dnsmasq, firewall nftables, ip_forward e APN
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
   - reinicia o dongle no final, pra ativar o usb-role-autosense de vez
@@ -41,14 +43,22 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent / "opendongle"
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
-        "opendongle_discovery.py", "usb-role-autosense.sh"]
+        "opendongle_discovery.py", "opendongle_config.py",
+        "opendongle_apply.py", "opendongled.py", "usb-role-autosense.sh"]
 
+# Um processo só pra painel, uplink guard, LEDs e descoberta (opendongled).
+# NÃO ordenar com "After=usb-role-autosense.service": esse serviço tem
+# "After=multi-user.target" (proposital — ver UNIT_USBROLE), e como este é
+# WantedBy=multi-user.target (Before= implícito), fecha um ciclo de
+# dependência que o systemd resolve descartando o job em todo boot (visto
+# ao vivo com o antigo opendongle-led.service). Os laços fazem polling e se
+# corrigem sozinhos, não precisam de ordem estrita de boot.
 UNIT = """[Unit]
-Description=OpenDongle painel web
+Description=OpenDongle (painel web, uplink guard, LEDs e descoberta)
 After=network.target NetworkManager.service
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_web.py
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongled.py
 Restart=always
 RestartSec=3
 
@@ -56,44 +66,9 @@ RestartSec=3
 WantedBy=multi-user.target
 """
 
-# Serviço do uplink_guard: só anuncia gateway quando há internet de fato,
-# resolvendo o "dongle sem SIM derruba a internet do PC".
-UNIT_UPLINK = """[Unit]
-Description=OpenDongle uplink guard (gateway condicional)
-After=network.target dnsmasq.service
-
-[Service]
-ExecStart=/usr/bin/python3 /opt/opendongle/uplink_guard.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-"""
-
-# Serviço dos LEDs: red:power/green:wlan/blue:wan contam papel USB (device/
-# host), modo Wi-Fi (cliente/hotspot) e internet sem precisar de SSH.
-# NÃO ordenar com "After=usb-role-autosense.service" aqui: esse serviço tem
-# "After=multi-user.target" (proposital, definido em bancada — ver
-# UNIT_USBROLE), e como opendongle-led.service é WantedBy=multi-user.target
-# (logo, Before= implícito), isso fecha um ciclo de dependência que o
-# systemd resolve descartando o job do LED silenciosamente em todo boot
-# (visto ao vivo: "Found ordering cycle on opendongle-led.service/start").
-# O script já faz polling a cada poucos segundos e se autocorrige sozinho,
-# não precisa de ordem estrita de boot.
-UNIT_LED = """[Unit]
-Description=OpenDongle LED (papel USB, modo Wi-Fi, internet e áudio)
-After=network.target NetworkManager.service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_led.py
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-"""
+# Units de versões antigas, quando cada parte era um processo separado.
+UNITS_ANTIGAS = ["opendongle-uplink.service", "opendongle-led.service",
+                 "opendongle-discovery.service"]
 
 # usb-role-autosense.sh: grupos de acesso, Bluetooth, decide papel USB
 # (device/host) e, em host, conecta o 4G plug-and-play (SIM -> APN).
@@ -108,23 +83,6 @@ Type=oneshot
 ExecStart=/usr/local/bin/usb-role-autosense.sh
 StandardOutput=journal
 RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-"""
-
-# Serviço de descoberta: responde a um probe UDP de broadcast com o próprio
-# hostname, pra opendongle_localizar.py (roda no PC) achar o IP quando o
-# mDNS não resolve (alguns Windows) sem depender de USB nem do roteador.
-UNIT_DISCOVERY = """[Unit]
-Description=OpenDongle descoberta na rede local (responde probe UDP)
-After=network.target NetworkManager.service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_discovery.py
-Restart=on-failure
-RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -231,6 +189,13 @@ def main():
         "sed -i \"s/bridge-ports usb0 usb1/bridge-ports usb0/\" \"$ni\"; "
         "echo \"fix: bridge-ports ajustado pra usb0 (ECM/NCM desligados nesse board)\"; "
         "fi && "
+        # NAT e redirecionamento de DNS agora vêm do firewall gerado pela
+        # config central (nftables); as regras de iptables da imagem saem.
+        "if [ -f \"$ni\" ] && grep -Eq \"^[[:space:]]*up[[:space:]]+ip6*tables \" \"$ni\"; then "
+        "cp -n \"$ni\" \"$ni.opendongle.orig\"; "
+        "sed -i -E \"/^[[:space:]]*up[[:space:]]+ip6*tables /d\" \"$ni\"; "
+        "echo \"iptables do /etc/network/interfaces movido pro firewall da config central\"; "
+        "fi && "
         # CLI acessível como 'opendongle'
         "printf \"#!/bin/sh\\nexec /usr/bin/python3 "
         "/opt/opendongle/opendongle_cli.py \\\"\\$@\\\"\\n\" "
@@ -239,18 +204,11 @@ def main():
         "cat > /etc/systemd/system/opendongle.service << \"EOF\"\n"
         + UNIT +
         "EOF\n"
-        "cat > /etc/systemd/system/opendongle-uplink.service << \"EOF\"\n"
-        + UNIT_UPLINK +
-        "EOF\n"
-        "cat > /etc/systemd/system/opendongle-led.service << \"EOF\"\n"
-        + UNIT_LED +
-        "EOF\n"
         "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
         + UNIT_USBROLE +
         "EOF\n"
-        "cat > /etc/systemd/system/opendongle-discovery.service << \"EOF\"\n"
-        + UNIT_DISCOVERY +
-        "EOF\n"
+        "systemctl disable --now " + " ".join(UNITS_ANTIGAS) + " >/dev/null 2>&1; "
+        "rm -f " + " ".join(f"/etc/systemd/system/{u}" for u in UNITS_ANTIGAS) + "\n"
         "cat > /etc/modules-load.d/opendongle.conf << \"EOF\"\n"
         + MODULES_LOAD +
         "EOF\n"
@@ -262,11 +220,15 @@ def main():
         "systemctl unmask bluetooth.service >/dev/null 2>&1; "
         "systemctl enable --now bluetooth.service >/dev/null 2>&1 "
         "|| echo \"aviso: bluetooth.service nao ativou (bluez ausente?)\"\n"
+        # config central: na 1a vez migra SSID/senha/APNs atuais e gera
+        # dnsmasq, firewall (nftables), ip_forward e APN
+        "python3 /opt/opendongle/opendongle_cli.py config aplicar "
+        "|| echo \"aviso: config central nao aplicou (veja a mensagem acima)\"\n"
         "systemctl daemon-reload && "
-        "systemctl enable --now opendongle.service && "
-        "systemctl enable --now opendongle-uplink.service && "
-        "systemctl enable --now opendongle-led.service && "
-        "systemctl enable --now opendongle-discovery.service && "
+        # restart (não só --now): numa reinstalação o serviço já está no ar
+        # com o código antigo carregado
+        "systemctl enable opendongle.service && "
+        "systemctl restart opendongle.service && "
         "systemctl enable usb-role-autosense.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
@@ -362,16 +324,33 @@ Observações honestas:
         pass   # esperado se a conexão já tiver caído — o reboot já foi disparado
 
     print("== [6/6] Esperando o dongle voltar pra rodar o teste geral...")
-    voltou = False
-    prazo = time.time() + 120
-    time.sleep(5)   # dá um respiro antes da 1ª tentativa (a rede cai na hora)
-    while time.time() < prazo:
+    def _porta_ssh_aberta():
         try:
             socket.create_connection((args.ip, 22), timeout=3).close()
-            voltou = True
-            break
+            return True
         except OSError:
-            time.sleep(3)
+            return False
+
+    # Primeiro espera a porta CAIR: o reboot leva alguns segundos pra começar
+    # e, sem isso, as checagens pegavam o sistema antigo no meio do
+    # desligamento ("Connection reset by peer" em tudo, visto ao vivo).
+    prazo = time.time() + 60
+    while time.time() < prazo and _porta_ssh_aberta():
+        time.sleep(2)
+
+    # porta aberta não basta: o sshd aceita TCP antes de conseguir autenticar
+    voltou = False
+    prazo = time.time() + 150
+    while time.time() < prazo:
+        if _porta_ssh_aberta():
+            try:
+                if subprocess.run(ssh + ["true"], capture_output=True,
+                                  timeout=15).returncode == 0:
+                    voltou = True
+                    break
+            except subprocess.TimeoutExpired:
+                pass
+        time.sleep(3)
 
     if not voltou:
         print("   ⚠ SSH não voltou em ~2min. Pode ser boot mais lento — "
@@ -380,12 +359,17 @@ Observações honestas:
               "se o papel USB não tiver resolvido pra 'device'.")
         sys.exit(1)
 
+    # espera o boot terminar: o usb-role-autosense (oneshot) fica
+    # "activating" enquanto decide o papel USB e aparecia como falha
+    try:
+        subprocess.run(ssh + ["timeout 120 systemctl is-system-running --wait"],
+                       capture_output=True, timeout=130)
+    except subprocess.TimeoutExpired:
+        pass
     print("   dongle respondeu — rodando checagens:")
     checagens = [
-        ("serviço painel web",         "systemctl is-active opendongle.service"),
-        ("serviço uplink guard",       "systemctl is-active opendongle-uplink.service"),
-        ("serviço LEDs",               "systemctl is-active opendongle-led.service"),
-        ("serviço descoberta na rede", "systemctl is-active opendongle-discovery.service"),
+        ("serviço OpenDongle (painel, uplink, LEDs, descoberta)",
+                                       "systemctl is-active opendongle.service"),
         ("serviço usb-role-autosense", "systemctl is-active usb-role-autosense.service"),
         ("avahi (opendongle.local)",   "systemctl is-active avahi-daemon"),
         ("papel USB (informativo)",    "cat /sys/class/usb_role/ci_hdrc.0-role-switch/role"),

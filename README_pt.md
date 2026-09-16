@@ -76,7 +76,7 @@ Para quem quer entender ou usar peça por peça:
 - **`opendongle_autoinstall.py`** — instala o Debian (backup → flash → verificação), com detecção de placa e modo de teste.
 - **`otimizar_dongle.py`** — aplica as otimizações de durabilidade e velocidade (reversível).
 - **`instalar_opendongle.py`** — instala o painel de configuração (motor + CLI + web).
-- **`opendongle/`** — o painel: motor único (`engine`), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
+- **`opendongle/`** — o painel: motor único (`engine`), configuração central (`config`, em `/etc/opendongle/config.json`) e o gerador dos arquivos de rede a partir dela (`apply`: dnsmasq, firewall nftables, APN), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`), o `opendongled` (um processo só rodando web, uplink, LEDs e descoberta, pra economizar RAM) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
 - **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
 - **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
 - **`opendongle_localizar.py`** — roda no PC; acha o IP do dongle na rede local quando `opendongle.local` não resolve (sem depender de USB nem de entrar no roteador).
@@ -94,6 +94,11 @@ sudo opendongle wifi --list                         # redes Wi-Fi visíveis
 sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
 sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
 sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
+sudo opendongle recursos                            # RAM usada por serviço
+sudo opendongle config show                         # config central (config aplicar pra reaplicar)
+sudo opendongle backup > backup.json                # exporta a config
+sudo opendongle restaurar backup.json               # restaura e aplica um backup
+sudo opendongle reset                               # volta à configuração de fábrica
 ```
 
 ---

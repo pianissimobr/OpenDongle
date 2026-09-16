@@ -22,62 +22,16 @@ Sem dependências externas: stdlib + dnsmasq (já presente na imagem).
 """
 
 import os
-import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_engine as eng
 
 # Arquivo de config incremental lido pelo dnsmasq do OpenStick.
 # Escrevemos AQUI o anúncio (ou a ausência) do gateway.
 DROPIN = "/etc/dnsmasq.d/zz-uplink-gateway.conf"
-IP_LOCAL = "192.168.100.1"
-REDE_LOCAL = "192.168.100."
 INTERVALO = 15            # segundos entre checagens
-HOSTS_TESTE = ["1.1.1.1", "8.8.8.8"]   # alvos de ping para aferir uplink
-
-
-def _run(cmd, timeout=10):
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout)
-        return r.returncode, r.stdout.strip()
-    except Exception:
-        return 1, ""
-
-
-def interfaces_uplink():
-    """Lista interfaces que NÃO são a rede USB local — candidatas a uplink
-    real (o modem 4G aparece como wwan0/ppp0; Wi-Fi cliente como wlan0)."""
-    rc, out = _run(["ip", "-o", "-4", "addr", "show"])
-    ifaces = []
-    for linha in out.splitlines():
-        partes = linha.split()
-        if len(partes) >= 4:
-            nome, addr = partes[1], partes[3]
-            # ignora a interface da rede local do dongle (br0/usb com .100.x)
-            if REDE_LOCAL in addr:
-                continue
-            if nome == "lo":
-                continue
-            ifaces.append(nome)
-    return ifaces
-
-
-def tem_uplink():
-    """
-    True só se conseguir SAIR pra internet por uma interface que não seja
-    a rede local. Testa ping amarrado a cada interface candidata; se
-    qualquer uma alcança a internet, há uplink.
-    """
-    candidatas = interfaces_uplink()
-    if not candidatas:
-        return False
-    for iface in candidatas:
-        for host in HOSTS_TESTE:
-            rc, _ = _run(["ping", "-c", "1", "-W", "2", "-I", iface, host],
-                         timeout=6)
-            if rc == 0:
-                return True
-    return False
 
 
 def escrever_estado(anunciar_gateway):
@@ -91,7 +45,7 @@ def escrever_estado(anunciar_gateway):
     if anunciar_gateway:
         conteudo = (
             "# gerado por uplink_guard: dongle COM internet -> é gateway\n"
-            f"dhcp-option=tag:br0,option:router,{IP_LOCAL}\n"
+            f"dhcp-option=tag:br0,option:router,{eng.ip_lan()}\n"
         )
     else:
         # router vazio = RFC: cliente NÃO instala rota default via dongle.
@@ -108,21 +62,25 @@ def escrever_estado(anunciar_gateway):
             atual = ""
     if atual == conteudo:
         return False   # nada mudou
-    tmp = DROPIN + ".tmp"
+    # temporário fora de /etc/dnsmasq.d (o dnsmasq leria um .tmp esquecido
+    # lá), mas no mesmo sistema de arquivos pro os.replace ser atômico
+    os.makedirs("/etc/opendongle", mode=0o700, exist_ok=True)
+    tmp = "/etc/opendongle/.gravando-uplink-gateway"
     with open(tmp, "w") as f:
         f.write(conteudo)
-    os.replace(tmp, DROPIN)  # troca atomica
-    # recarrega o dnsmasq (SIGHUP relê drop-ins sem derrubar o serviço)
-    _run(["systemctl", "reload", "dnsmasq"], timeout=15)
+    os.replace(tmp, DROPIN)
+    # restart, não reload: o SIGHUP do dnsmasq não relê dhcp-option do
+    # conf-dir, então o anúncio do gateway não mudava de verdade
+    eng._run(["systemctl", "restart", "dnsmasq"], timeout=15)
     return True
 
 
-def main():
-    if os.geteuid() != 0:
-        sys.exit("Precisa rodar como root (é um serviço de sistema).")
+def laco():
+    """Renova o estado de internet a cada INTERVALO e ajusta o anúncio de
+    gateway. Roda como thread do opendongled (ou sozinho pelo main)."""
     ultimo = None
     while True:
-        estado = tem_uplink()
+        estado = eng.tem_internet(max_idade=0)
         if estado != ultimo:
             mudou = escrever_estado(estado)
             if mudou:
@@ -137,10 +95,12 @@ def main():
 if __name__ == "__main__":
     # modo teste: 'python3 uplink_guard.py once' imprime o estado e sai
     if len(sys.argv) > 1 and sys.argv[1] == "once":
-        print("tem_uplink:", tem_uplink())
-        print("interfaces candidatas:", interfaces_uplink())
+        print("tem_uplink:", eng.tem_internet(max_idade=0))
+        print("interfaces candidatas:", eng.interfaces_uplink())
         sys.exit(0)
+    if os.geteuid() != 0:
+        sys.exit("Precisa rodar como root (é um serviço de sistema).")
     try:
-        main()
+        laco()
     except KeyboardInterrupt:
         pass

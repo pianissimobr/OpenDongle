@@ -27,8 +27,8 @@ Bônus: com áudio tocando, o LED que estiver aceso FIXO (azul ou verde)
 passa a piscar no ritmo do áudio — nunca atropela erro nem aviso "sem
 internet" (esses têm prioridade e já usam o piscar pra outra coisa).
 
-Sem dependências obrigatórias: stdlib + nmcli (já presente no Debian do
-OpenStick). O bônus de áudio usa `arecord` (pacote alsa-utils) só se
+Sem dependências obrigatórias: stdlib + opendongle_engine (modo do Wi-Fi e
+internet). O bônus de áudio usa `arecord` (pacote alsa-utils) só se
 disponível; sem ele, cai num piscar de frequência fixa.
 """
 
@@ -41,9 +41,10 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_engine as eng
+
 ROLE_SW = "/sys/class/usb_role/ci_hdrc.0-role-switch/role"
-HOTSPOT_CON = "hotspot"        # mesmo nome de conexão NM usado no opendongle_engine.py
-IFACE_WIFI = "wlan0"
 LED_DIR = "/sys/class/leds"
 ERROR_FLAG = "/run/opendongle-led/error"   # outros serviços podem criar esse arquivo pra forçar erro
 
@@ -52,7 +53,6 @@ AUDIO_POLL = 0.5               # segundos entre checagens de "áudio tocando"
 BLINK_MODERADO = (500, 500)    # ms on/off — "em progresso / aviso"
 BLINK_RAPIDO = (100, 100)      # ms on/off — erro
 BLINK_AUDIO_FALLBACK = (90, 90)  # sem loopback pra medir amplitude, só um "vivo" fixo
-HOSTS_TESTE = ["1.1.1.1", "8.8.8.8"]
 
 
 def _run(cmd, timeout=10):
@@ -130,45 +130,6 @@ def papel_usb():
             return f.read().strip()
     except OSError:
         return None
-
-
-def modo_wifi():
-    """'hotspot', 'wifi' (cliente), None (nem um nem outro) ou 'erro' se
-    o nmcli não respondeu (painel de rede indisponível)."""
-    rc, out, _ = _run(["nmcli", "-t", "-f", "NAME,DEVICE,STATE",
-                       "connection", "show", "--active"])
-    if rc != 0:
-        return "erro"
-    ativo = out or ""
-    if HOTSPOT_CON.lower() in ativo.lower():
-        return "hotspot"
-    for linha in ativo.splitlines():
-        p = linha.split(":")
-        if len(p) >= 2 and p[1] == IFACE_WIFI:
-            return "wifi"
-    return None
-
-
-def interfaces_uplink():
-    """Interfaces candidatas a uplink real — tudo que não for a rede local
-    do dongle. Mesmo critério do uplink_guard.py (192.168.100.x é a rede
-    USB de gestão, nunca é o caminho pra internet de verdade)."""
-    rc, out, _ = _run(["ip", "-o", "-4", "addr", "show"])
-    ifaces = []
-    for linha in out.splitlines():
-        p = linha.split()
-        if len(p) >= 4 and p[1] != "lo" and "192.168.100." not in p[3]:
-            ifaces.append(p[1])
-    return ifaces
-
-
-def tem_internet():
-    for iface in interfaces_uplink():
-        for host in HOSTS_TESTE:
-            rc, _, _ = _run(["ping", "-c", "1", "-W", "2", "-I", iface, host], timeout=5)
-            if rc == 0:
-                return True
-    return False
 
 
 def erro_pendente():
@@ -284,7 +245,7 @@ def aplicar_estado(efeito_audio):
         return None
 
     # papel == "host": segue a ordem de prioridade das outras regras
-    modo = modo_wifi()
+    modo = eng.modo_wifi()
 
     if modo == "erro":
         efeito_audio.ajustar(None)
@@ -296,7 +257,7 @@ def aplicar_estado(efeito_audio):
     if modo == "wifi":
         LED_RED.off()
         LED_GREEN.off()
-        if tem_internet():
+        if eng.tem_internet():
             LED_BLUE.on()
             return LED_BLUE
         efeito_audio.ajustar(None)
@@ -306,7 +267,7 @@ def aplicar_estado(efeito_audio):
     if modo == "hotspot":
         LED_RED.off()
         LED_BLUE.off()
-        if tem_internet():
+        if eng.tem_internet():
             LED_GREEN.on()
             return LED_GREEN
         efeito_audio.ajustar(None)
@@ -321,9 +282,9 @@ def aplicar_estado(efeito_audio):
     return None
 
 
-def main():
-    if os.geteuid() != 0:
-        sys.exit("Precisa rodar como root (é um serviço de sistema).")
+def laco():
+    """Laço dos LEDs. Roda como thread do opendongled (ou sozinho pelo main).
+    A internet vem do cache do engine, renovado pelo laço do uplink_guard."""
     efeito_audio = EfeitoAudio()
     led_candidato = None
     proxima_avaliacao = 0.0
@@ -343,11 +304,13 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
         aplicar_estado(EfeitoAudio())
         print("papel_usb:", papel_usb())
-        print("modo_wifi:", modo_wifi())
-        print("tem_internet:", tem_internet())
+        print("modo_wifi:", eng.modo_wifi())
+        print("tem_internet:", eng.tem_internet())
         print("audio_tocando:", audio_tocando())
         sys.exit(0)
+    if os.geteuid() != 0:
+        sys.exit("Precisa rodar como root (é um serviço de sistema).")
     try:
-        main()
+        laco()
     except KeyboardInterrupt:
         pass

@@ -25,8 +25,13 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
-HOTSPOT_CON = "hotspot"        # nome da conexão NM do hotspot (minúsculo
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_apply as aplic
+import opendongle_config as conf
+
+HOTSPOT_CON = "hotspot"       # nome da conexão NM do hotspot (minúsculo
                                 # na imagem base do OpenStick-Builder)
 IFACE_WIFI = "wlan0"
 ADMIN_USER = "user"
@@ -45,18 +50,61 @@ def _run(cmd, timeout=40, entrada=None):
         return 127, "", f"comando não encontrado: {cmd[0]}"
 
 
-# --------------------------------------------------------------- STATUS
-def _tem_internet():
-    # tenta resolver+pingar sem depender de DNS externo travar
-    rc, _, _ = _run(["ping", "-c", "1", "-W", "3", "1.1.1.1"], timeout=8)
-    return rc == 0
+# --------------------------------------------------------------- ESTADO DA REDE
+# Única fonte de "tem internet?" e "modo do Wi-Fi" (antes copiada no LED e no
+# uplink_guard). Com tudo no mesmo processo (opendongled), o laço do uplink
+# renova o cache e LED/painel só leem — sem pingar cada um por conta própria.
+HOSTS_TESTE = ["1.1.1.1", "8.8.8.8"]
+_INTERNET = {"valor": False, "quando": 0.0}
 
 
-def _modo_atual():
-    """hotspot se a conexão Hotspot está ativa; senão, se wlan0 é cliente
-    conectado, 'wifi'; senão 'indefinido'."""
+def ip_lan():
+    try:
+        return conf.carregar()["lan"]["ip"]
+    except (ValueError, OSError, KeyError):
+        return conf.PADRAO["lan"]["ip"]
+
+
+def interfaces_uplink():
+    """Interfaces candidatas a uplink real: tudo com IPv4 que não seja a
+    rede local do dongle (o 4G aparece como wwan0; Wi-Fi cliente, wlan0)."""
+    rede = ".".join(ip_lan().split(".")[:3]) + "."
+    rc, out, _ = _run(["ip", "-o", "-4", "addr", "show"])
+    ifaces = []
+    for linha in out.splitlines():
+        p = linha.split()
+        if len(p) >= 4 and p[1] != "lo" and not p[3].startswith(rede):
+            ifaces.append(p[1])
+    return ifaces
+
+
+def tem_internet(max_idade=20):
+    """True se sai pra internet por alguma interface que não seja a LAN.
+    Reaproveita o último resultado se tiver menos de 'max_idade' segundos."""
+    agora = time.monotonic()
+    if _INTERNET["quando"] and agora - _INTERNET["quando"] < max_idade:
+        return _INTERNET["valor"]
+    valor = False
+    for iface in interfaces_uplink():
+        for host in HOSTS_TESTE:
+            rc, _, _ = _run(["ping", "-c", "1", "-W", "2", "-I", iface, host],
+                            timeout=6)
+            if rc == 0:
+                valor = True
+                break
+        if valor:
+            break
+    _INTERNET.update(valor=valor, quando=time.monotonic())
+    return valor
+
+
+def modo_wifi():
+    """'hotspot', 'wifi' (cliente), None (nenhum) ou 'erro' (sem resposta
+    do gerenciador de rede)."""
     rc, out, _ = _run(["nmcli", "-t", "-f", "NAME,DEVICE,STATE",
                        "connection", "show", "--active"])
+    if rc != 0:
+        return "erro"
     ativo = out or ""
     if HOTSPOT_CON.lower() in ativo.lower():
         return "hotspot"
@@ -64,7 +112,13 @@ def _modo_atual():
         p = linha.split(":")
         if len(p) >= 2 and p[1] == IFACE_WIFI:
             return "wifi"
-    return "indefinido"
+    return None
+
+
+# --------------------------------------------------------------- STATUS
+def _modo_atual():
+    modo = modo_wifi()
+    return modo if modo in ("hotspot", "wifi") else "indefinido"
 
 
 def _ssid_hotspot():
@@ -80,31 +134,76 @@ def status():
     return {
         "ok": True,
         "modo": modo,
-        "internet": _tem_internet(),
+        "internet": tem_internet(),
         "hotspot_ssid": _ssid_hotspot() if modo != "wifi" else None,
     }
 
 
-# --------------------------------------------------------------- HOTSPOT
-def _validar_senha_wifi(senha):
-    # WPA2 exige 8..63 caracteres
-    if not (8 <= len(senha) <= 63):
-        return "A senha do Wi-Fi precisa ter de 8 a 63 caracteres."
+# --------------------------------------------------------------- CONFIG CENTRAL
+def _alterar_config(mudanca):
+    """Carrega a config, aplica 'mudanca(cfg)' e salva (validando tudo).
+    Devolve None se deu certo, ou a mensagem de erro."""
+    try:
+        cfg = conf.carregar()
+        mudanca(cfg)
+        conf.salvar(cfg)
+    except ValueError as e:
+        return str(e)
+    except OSError as e:
+        return f"Falha ao gravar a config: {e}"
     return None
 
 
+def config_show():
+    try:
+        return {"ok": True, "config": conf.carregar()}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível ({e}). Use 'restaurar' "
+                "com um backup ou 'reset'."}
+
+
+def config_aplicar():
+    try:
+        return aplic.aplicar(conf.carregar())
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+
+
+def backup():
+    try:
+        return {"ok": True, "backup": conf.exportar()}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+
+
+def restaurar(texto):
+    try:
+        cfg = conf.restaurar(texto or "")
+    except ValueError as e:
+        return {"ok": False, "erro": str(e)}
+    r = aplic.aplicar(cfg)
+    if r["ok"]:
+        r["aviso"] = "Backup restaurado e aplicado."
+    return r
+
+
+def reset():
+    r = aplic.aplicar(conf.reset_fabrica())
+    if r["ok"]:
+        r["aviso"] = ("Configuração de fábrica aplicada. Wi-Fi: "
+                      f"{SSID_PADRAO} / {SENHA_PADRAO}.")
+    return r
+
+
+# --------------------------------------------------------------- HOTSPOT
 def set_hotspot(ssid, senha):
     """Troca nome e senha do hotspot. ATENÇÃO: aplica reiniciando a
     conexão — quem estiver conectado cai e precisa reconectar no SSID
     novo. A casca deve avisar o usuário ANTES."""
     ssid = (ssid or "").strip()
-    if not (1 <= len(ssid) <= 32):
-        return {"ok": False, "erro": "O nome da rede deve ter 1 a 32 "
-                "caracteres."}
-    err = _validar_senha_wifi(senha)
+    err = conf.validar_ssid(ssid) or conf.validar_senha_wifi(senha or "")
     if err:
         return {"ok": False, "erro": err}
-
     passos = [
         ["nmcli", "connection", "modify", HOTSPOT_CON,
          "802-11-wireless.ssid", ssid],
@@ -122,6 +221,9 @@ def set_hotspot(ssid, senha):
     rc, _, err = _run(["nmcli", "connection", "up", HOTSPOT_CON])
     if rc != 0:
         return {"ok": False, "erro": f"Rede não subiu: {err[:120]}"}
+    err = _alterar_config(lambda c: c["wifi"]["hotspot"].update(ssid=ssid, senha=senha))
+    if err:
+        return {"ok": False, "erro": err}
     return {"ok": True, "ssid": ssid,
             "aviso": "Reconecte-se ao Wi-Fi com o novo nome e senha."}
 
@@ -132,6 +234,9 @@ def mode_hotspot():
     rc, _, err = _run(["nmcli", "connection", "up", HOTSPOT_CON])
     if rc != 0:
         return {"ok": False, "erro": f"Não ativou o hotspot: {err[:120]}"}
+    err = _alterar_config(lambda c: c["wifi"].update(modo="hotspot"))
+    if err:
+        return {"ok": False, "erro": err}
     return {"ok": True, "modo": "hotspot"}
 
 
@@ -139,8 +244,12 @@ def connect_wifi(ssid, senha):
     """Vira CLIENTE de um Wi-Fi existente. O hotspot cai (limitação do
     chip). Acesso pelo cabo USB continua."""
     ssid = (ssid or "").strip()
+    senha = senha or ""
     if not ssid:
         return {"ok": False, "erro": "Informe o nome da rede Wi-Fi."}
+    err = conf.validar_ssid(ssid) or (senha and conf.validar_senha_wifi(senha))
+    if err:
+        return {"ok": False, "erro": err}
     cmd = ["nmcli", "device", "wifi", "connect", ssid]
     if senha:
         cmd += ["password", senha]
@@ -148,6 +257,10 @@ def connect_wifi(ssid, senha):
     rc, out, err = _run(cmd, timeout=60)
     if rc != 0:
         return {"ok": False, "erro": f"Não conectou: {(err or out)[:140]}"}
+    err = _alterar_config(lambda c: (c["wifi"].update(modo="cliente"),
+                                     c["wifi"]["cliente"].update(ssid=ssid, senha=senha)))
+    if err:
+        return {"ok": False, "erro": err}
     return {"ok": True, "modo": "wifi", "ssid": ssid,
             "aviso": "Modo cliente ativo; o hotspot foi desligado."}
 
@@ -285,6 +398,59 @@ def saude_sistema():
     }
 
 
+def _unit_do_processo(pid):
+    """Nome da unit systemd (ou 'kernel/sem unit') a partir do cgroup v2."""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            caminho = f.read().strip().rsplit("::", 1)[-1]
+    except OSError:
+        return None
+    partes = [p for p in caminho.split("/") if p]
+    for p in reversed(partes):
+        if p.endswith((".service", ".scope")):
+            # sessões de login viram "session-N.scope": agrupa todas juntas
+            return "sessões de login" if p.startswith("session-") else p
+    return partes[-1] if partes else "kernel/sem unit"
+
+
+def recursos():
+    """RAM por serviço. Usa PSS (smaps_rollup), que divide as bibliotecas
+    compartilhadas entre os processos — somar RSS conta a mesma libc várias
+    vezes e infla o total. Cai pro RSS se PSS não for legível (sem root)."""
+    por_unit = {}
+    usou_pss = True
+    for d in glob.glob("/proc/[0-9]*"):
+        pid = d.rsplit("/", 1)[-1]
+        kb = None
+        try:
+            with open(f"{d}/smaps_rollup") as f:
+                for linha in f:
+                    if linha.startswith("Pss:"):
+                        kb = int(linha.split()[1])
+                        break
+            # thread de kernel: smaps_rollup vazio, sem memória de usuário
+        except PermissionError:
+            usou_pss = False
+            kb = _ler_kv_kb(f"{d}/status").get("VmRSS")
+        except OSError:
+            continue
+        if not kb:
+            continue   # thread de kernel ou processo que já saiu
+        unit = _unit_do_processo(pid)
+        if unit is None:
+            continue
+        por_unit[unit] = por_unit.get(unit, 0) + kb
+    mem = _ler_kv_kb("/proc/meminfo")
+    return {
+        "ok": True,
+        "metrica": "PSS" if usou_pss else "RSS (sem root: soma inflada)",
+        "ram_total_kb": mem.get("MemTotal", 0),
+        "ram_disponivel_kb": mem.get("MemAvailable", 0),
+        "servicos": sorted(({"unit": u, "kb": kb} for u, kb in por_unit.items()),
+                           key=lambda x: -x["kb"]),
+    }
+
+
 # --------------------------------------------------------------- BLUETOOTH
 def bluetooth_status():
     """Só leitura — nunca liga/desliga nada."""
@@ -333,14 +499,11 @@ def bluetooth_scan(segundos=8):
     return {"ok": True, "encontrados": encontrados}
 
 
-_RE_MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
-
-
 def bluetooth_pair(mac):
     """Só cobre pareamento 'just works' (sem confirmar código na tela do
     aparelho) — é a limitação real do bluetoothctl em modo não-interativo."""
     mac = (mac or "").strip().upper()
-    if not _RE_MAC.match(mac):
+    if not conf.RE_MAC.match(mac):
         return {"ok": False, "erro": "Endereço MAC inválido."}
     rc, out, err = _run(["bluetoothctl", "--timeout", "15", "pair", mac],
                         timeout=20)
@@ -354,7 +517,7 @@ def bluetooth_pair(mac):
 
 def bluetooth_forget(mac):
     mac = (mac or "").strip().upper()
-    if not _RE_MAC.match(mac):
+    if not conf.RE_MAC.match(mac):
         return {"ok": False, "erro": "Endereço MAC inválido."}
     rc, _, err = _run(["bluetoothctl", "remove", mac])
     if rc != 0:
@@ -364,9 +527,6 @@ def bluetooth_forget(mac):
 
 # --------------------------------------------------------------- MODEM
 QMI_DEV = "/dev/wwan0qmi0"
-APN_CONF = "/etc/usb-role-autosense-apn.conf"
-_RE_MCCMNC = re.compile(r"^\d{3}-\d{2,3}$")
-_RE_APN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 
 def _qmi(args, timeout=15):
@@ -434,38 +594,22 @@ def modem_reconectar():
 
 
 def modem_set_apn(mcc_mnc, apn):
-    """Valida contra whitelist rígido: o arquivo é lido via 'source' em
-    bash, como root, no boot — nada fora do whitelist é aceito. Só
-    ACRESCENTA uma linha (bash 'source' faz o último valor repetido
-    ganhar — não precisa reescrever o arquivo todo)."""
+    """Grava na config central; o apply gera o /etc/usb-role-autosense-apn.conf
+    (lido via 'source' como root no boot — por isso o whitelist rígido do
+    opendongle_config e o 'bash -n' antes de gravar)."""
     mcc_mnc = (mcc_mnc or "").strip()
     apn = (apn or "").strip()
-    if not _RE_MCCMNC.match(mcc_mnc):
+    if not conf.RE_MCCMNC.match(mcc_mnc):
         return {"ok": False, "erro": "MCC-MNC inválido (formato: 724-01)."}
-    if not _RE_APN.match(apn):
+    if not conf.RE_APN.match(apn):
         return {"ok": False, "erro": "APN inválido (letras, números, "
                 "ponto, traço ou underline)."}
-    try:
-        # se o arquivo já existe e NÃO termina em \n, a linha nova gruda
-        # na anterior sem separação — se a anterior for comentário, a
-        # entrada some dentro do comentário (visto ao vivo: sintaxe bash
-        # continua válida, mas o mapeamento nunca é lido de verdade).
-        precisa_nova_linha = False
-        if os.path.exists(APN_CONF) and os.path.getsize(APN_CONF) > 0:
-            with open(APN_CONF, "rb") as f:
-                f.seek(-1, os.SEEK_END)
-                precisa_nova_linha = f.read(1) != b"\n"
-        with open(APN_CONF, "a") as f:
-            if precisa_nova_linha:
-                f.write("\n")
-            f.write(f'APN_MAP["{mcc_mnc}"]="{apn}"\n')
-    except OSError as e:
-        return {"ok": False, "erro": f"Falha ao gravar: {e}"}
-    # só verifica sintaxe (nunca executa) antes de confiar que fica
-    # válido pro próximo boot, já que o arquivo roda como root
-    rc, _, err = _run(["bash", "-n", APN_CONF])
-    if rc != 0:
-        return {"ok": False, "erro": f"Config ficou inválida: {err[:120]}"}
+    err = _alterar_config(lambda c: c["wan"]["apn_extra"].update({mcc_mnc: apn}))
+    if err:
+        return {"ok": False, "erro": err}
+    r = config_aplicar()
+    if not r["ok"]:
+        return r
     return {"ok": True, "aviso": "Salvo. Clique 'Reconectar 4G' para aplicar agora."}
 
 
@@ -489,6 +633,11 @@ ACOES = {
     "connect-wifi": lambda a: connect_wifi(a.get("ssid"), a.get("senha")),
     "list-wifi": lambda a: listar_wifi(),
     "set-password": lambda a: set_password(a.get("senha", "")),
+    "config-show": lambda a: config_show(),
+    "config-aplicar": lambda a: config_aplicar(),
+    "backup": lambda a: backup(),
+    "restaurar": lambda a: restaurar(a.get("texto", "")),
+    "reset": lambda a: reset(),
 }
 
 

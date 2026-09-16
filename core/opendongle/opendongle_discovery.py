@@ -19,7 +19,7 @@ PORTA = 40404
 PROBE = b"OPENDONGLE_DISCOVER_V1"
 
 
-def main():
+def laco():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", PORTA))
@@ -41,4 +41,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    laco()
