@@ -34,6 +34,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_config as conf
 import opendongle_engine as eng
 import opendongle_diag as diag
 
@@ -116,46 +117,144 @@ def _cookie_sessao():
 DETECCAO =("/generate_204", "/gen_204", "/hotspot-detect.html",
             "/ncsi.txt", "/connecttest.txt", "/canonical.html")
 
-ESTILO = """<style>
-:root{--bg:#0b1220;--card:#151f36;--in:#0b1220;--br:#243050;
- --tx:#e6ecf7;--mut:#8ea0c4;--ac:#4f8cff;--ok:#34d399;--er:#f87171}
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;
- background:var(--bg);color:var(--tx);display:flex;justify-content:center;
- padding:20px}.wrap{width:100%;max-width:440px}
-.card{background:var(--card);border:1px solid var(--br);border-radius:16px;
- padding:24px;margin-bottom:16px}h1{font-size:1.35em;margin:0 0 4px}
-h2{font-size:1.05em;margin:0 0 12px}p{color:var(--mut);line-height:1.5}
-label{display:block;font-size:.85em;color:var(--mut);margin:12px 0 4px}
-input,select{width:100%;padding:12px;border-radius:10px;border:1px solid
- var(--br);background:var(--in);color:var(--tx);font-size:1em}
-button{width:100%;padding:13px;margin-top:16px;border:0;border-radius:10px;
- background:var(--ac);color:#fff;font-size:1em;font-weight:600;cursor:pointer}
-button.sec{background:#26324f}a.btn{display:block;text-decoration:none;
- text-align:center}.badge{display:inline-block;padding:4px 10px;border-radius:
- 20px;font-size:.8em;font-weight:600}.b-ok{background:rgba(52,211,153,.15);
- color:var(--ok)}.b-er{background:rgba(248,113,113,.15);color:var(--er)}
-.row{display:flex;gap:10px}.row>*{flex:1}.msg{padding:10px;border-radius:8px;
- margin-top:12px;font-size:.9em}.msg.ok{background:rgba(52,211,153,.12);
- color:var(--ok)}.msg.er{background:rgba(248,113,113,.12);color:var(--er)}
-.aviso{background:rgba(251,191,36,.1);border:1px solid #a16207;border-radius:
- 8px;padding:10px;font-size:.85em;color:#fcd34d;margin-top:12px}
-.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
-.stat{background:var(--in);border:1px solid var(--br);border-radius:10px;
- padding:10px;text-align:center}
-.stat span{display:block;font-size:.75em;color:var(--mut);margin-bottom:2px}
-.stat b{display:block;font-size:1.3em}
-.stat b.av{color:#fcd34d}.stat b.er{color:var(--er)}
-.b-av{background:rgba(251,191,36,.15);color:#fcd34d}
-.linha{display:flex;justify-content:space-between;align-items:center;
- text-decoration:none;color:var(--tx);padding:10px 0;border-bottom:1px
- solid var(--br)}.linha:last-child{border-bottom:none}</style>"""
+# ---------- aparência e layout (modelo do Ajustes do Tarsila) ----------
+_ESCURO = ("--bg:#0b1220;--card:#151f36;--in:#0b1220;--br:#243050;--tx:#e6ecf7;"
+           "--mut:#8ea0c4;--ac:#4f8cff;--ok:#34d399;--er:#f87171;--sec:#26324f;"
+           "--av-bg:rgba(251,191,36,.1);--av-br:#a16207;--av-tx:#fcd34d")
+_CLARO = ("--bg:#f2f4f8;--card:#ffffff;--in:#f7f8fb;--br:#dde3ee;--tx:#1b2436;"
+          "--mut:#5f6c85;--ac:#2f6fe4;--ok:#0f8a5f;--er:#c93c3c;--sec:#e6ebf4;"
+          "--av-bg:#fff6dc;--av-br:#e0b13f;--av-tx:#7a5300")
+
+# claro por padrão; escuro se o sistema pedir (auto) ou se o usuário escolher.
+# A escolha é um cookie lido no servidor: a página já sai no tema certo, sem
+# piscar, e o dongle não guarda nada.
+ESTILO = f"""<style>
+:root{{{_CLARO}}}
+@media (prefers-color-scheme:dark){{:root:not([data-tema=claro]){{{_ESCURO}}}}}
+:root[data-tema=escuro]{{{_ESCURO}}}
+*{{box-sizing:border-box}}
+button,input,select,textarea{{font-family:inherit}}
+body{{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--tx)}}
+.topo{{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;
+ padding:10px 16px;background:var(--card);border-bottom:1px solid var(--br)}}
+.topo a{{color:var(--tx);text-decoration:none;font-weight:700}}
+.app{{display:flex;flex-direction:column;gap:14px;max-width:980px;margin:0 auto;padding:14px}}
+nav.cat{{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}}
+nav.cat a{{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;
+ color:var(--tx);text-decoration:none;white-space:nowrap}}
+nav.cat a.atual{{background:var(--sec);font-weight:600}}
+main{{flex:1;min-width:0;max-width:600px;width:100%}}
+@media (min-width:860px){{.app{{flex-direction:row;gap:24px}}
+ nav.cat{{flex-direction:column;width:220px;position:sticky;top:70px;align-self:flex-start}}}}
+a.volta{{display:inline-block;margin:0 0 10px;color:var(--ac);text-decoration:none}}
+.card{{background:var(--card);border:1px solid var(--br);border-radius:16px;
+ padding:18px 20px;margin-bottom:14px}}
+h1{{font-size:1.35em;margin:0 0 4px}}h2{{font-size:1.05em;margin:0 0 10px}}
+p{{color:var(--mut);line-height:1.5}}
+label{{display:block;font-size:.85em;color:var(--mut);margin:12px 0 4px}}
+input,select,textarea{{width:100%;padding:12px;border-radius:10px;border:1px solid var(--br);
+ background:var(--in);color:var(--tx);font-size:1em}}
+button{{width:100%;padding:13px;margin-top:16px;border:0;border-radius:10px;
+ background:var(--ac);color:#fff;font-size:1em;font-weight:600;cursor:pointer}}
+button.sec{{background:var(--sec);color:var(--tx)}}
+a.btn{{display:block;text-decoration:none;text-align:center}}
+.badge{{display:inline-block;padding:4px 10px;border-radius:20px;font-size:.8em;font-weight:600}}
+.b-ok{{background:rgba(52,211,153,.15);color:var(--ok)}}
+.b-er{{background:rgba(248,113,113,.15);color:var(--er)}}
+.b-av{{background:rgba(251,191,36,.15);color:var(--av-tx)}}
+.row{{display:flex;gap:10px}}.row>*{{flex:1}}
+.msg{{padding:10px;border-radius:8px;margin-top:12px;font-size:.9em}}
+.msg.ok{{background:rgba(52,211,153,.12);color:var(--ok)}}
+.msg.er{{background:rgba(248,113,113,.12);color:var(--er)}}
+.aviso{{background:var(--av-bg);border:1px solid var(--av-br);border-radius:8px;padding:10px;
+ font-size:.85em;color:var(--av-tx);margin-top:12px}}
+.stats{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}}
+.stat{{background:var(--in);border:1px solid var(--br);border-radius:10px;padding:10px;text-align:center}}
+.stat span{{display:block;font-size:.75em;color:var(--mut);margin-bottom:2px}}
+.stat b{{display:block;font-size:1.3em}}.stat b.av{{color:var(--av-tx)}}.stat b.er{{color:var(--er)}}
+.linha{{display:flex;justify-content:space-between;align-items:center;text-decoration:none;
+ color:var(--tx);padding:10px 0;border-bottom:1px solid var(--br)}}.linha:last-child{{border-bottom:none}}
+.item{{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--br);
+ color:var(--tx);text-decoration:none}}.item:last-child{{border-bottom:none}}
+.item .ic{{font-size:1.25em;width:28px;text-align:center}}.item .tx{{flex:1;min-width:0}}
+.item small{{display:block;color:var(--mut);margin-top:2px}}.item .seta{{color:var(--mut)}}
+.seg{{display:flex;gap:6px}}.seg button{{margin:0;padding:10px;background:var(--sec);color:var(--tx)}}
+.seg button.atual{{background:var(--ac);color:#fff}}
+</style>"""
+
+# (id, ícone, nome, rota). Ordem fixa: memória espacial vale mais que favoritos.
+CATEGORIAS = [("geral", "🖥️", "Geral", "/geral"),
+              ("internet", "🌐", "Internet", "/internet"),
+              ("dispositivos", "🔌", "Dispositivos", "/dispositivos"),
+              ("audio", "🎧", "Áudio", "/audio")]
+CAT_AVANCADAS = ("avancadas", "🧰", "Opções avançadas", "/avancadas")
+_CAT_POR_ID = {c[0]: c for c in CATEGORIAS + [CAT_AVANCADAS]}
+
+# rota -> categoria (a rota decide onde a página "mora" na barra lateral)
+ROTAS_CATEGORIA = {
+    "geral": ("/geral", "/status", "/senha", "/set-password", "/sistema", "/restaurar",
+              "/reset"),
+    "internet": ("/internet", "/hotspot", "/set-hotspot", "/mode-hotspot", "/wifi",
+                 "/modem", "/rede", "/lan", "/firewall", "/fw-set", "/tor", "/remoto",
+                 "/confirmar", "/rede-confirmar"),
+    "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led"),
+    "audio": ("/audio", "/audio-test"),
+    "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos"),
+}
+_PREFIXOS_CATEGORIA = (("/bluetooth-", "dispositivos"), ("/modem-", "internet"),
+                       ("/fixo-", "internet"), ("/redir-", "internet"),
+                       ("/remoto-", "internet"))
+
+
+def categoria_da_rota(path):
+    for cat, rotas in ROTAS_CATEGORIA.items():
+        if path in rotas:
+            return cat
+    for prefixo, cat in _PREFIXOS_CATEGORIA:
+        if path.startswith(prefixo):
+            return cat
+    return None
+
+
+# contexto da requisição atual (cada requisição roda na sua thread)
+_CTX = threading.local()
+
+
+def _ctx(nome, padrao=None):
+    return getattr(_CTX, nome, padrao)
+
+
+def _nav():
+    atual = _ctx("categoria")
+    # escondidas até os 7 toques, mas visíveis se a pessoa já está nelas
+    visivel = _ctx("avancadas") or atual == "avancadas"
+    cats = CATEGORIAS + ([CAT_AVANCADAS] if visivel else [])
+    return "<nav class='cat'>" + "".join(
+        f"<a href='{rota}' class='{'atual' if cid == atual else ''}'>"
+        f"<span>{ic}</span>{nome}</a>" for cid, ic, nome, rota in cats) + "</nav>"
 
 
 def page(corpo, titulo="OpenDongle"):
-    return (f"<!doctype html><html lang='pt-br'><head><meta charset='utf-8'>"
-            f"<meta name='viewport' content='width=device-width,"
-            f"initial-scale=1'><title>{titulo}</title>{ESTILO}</head>"
-            f"<body><div class='wrap'>{corpo}</div>{SCRIPT_ENVIO}</body></html>").encode()
+    cat = _CAT_POR_ID.get(_ctx("categoria"))
+    volta = ""
+    if cat and _ctx("path") != cat[3]:   # página de detalhe: volta pra categoria
+        volta = f"<a class='volta' href='{cat[3]}'>‹ {cat[2]}</a>"
+    tema = _ctx("tema", "auto")
+    return (f"<!doctype html><html lang='pt-br' data-tema='{tema}'><head>"
+            f"<meta charset='utf-8'><meta name='viewport' content='width=device-width,"
+            f"initial-scale=1'><title>{html.escape(titulo)}</title>{ESTILO}</head><body>"
+            f"<div class='topo'><a href='/'>🔌 OpenDongle</a></div>"
+            f"<div class='app'>{_nav()}<main>{volta}{corpo}</main></div>"
+            f"{SCRIPT_ENVIO}</body></html>").encode()
+
+
+def item(icone, titulo, sub="", url=None, extra=""):
+    """Linha do Tarsila: ícone, título, subtítulo e seta (quando é link)."""
+    tag, fim = (f"<a class='item' href='{url}'>", "</a>") if url else ("<div class='item'>", "</div>")
+    sub_html = f"<small>{html.escape(sub)}</small>" if sub else ""
+    seta = "<span class='seta'>›</span>" if url else extra
+    return (f"{tag}<span class='ic'>{icone}</span><span class='tx'>{html.escape(titulo)}"
+            f"{sub_html}</span>{seta}{fim}")
 
 
 # Ao enviar um formulário, a resposta pode demorar (aplicar config, acordar
@@ -203,7 +302,7 @@ def _resumo_hardware():
             f"<a class='linha' href='/audio'><span>🎧 Áudio</span>{audio_badge}</a>")
 
 
-def tela_status(extra=""):
+def tela_status():
     st = eng.status()
     sa = eng.saude_sistema()
     if st["internet"]:
@@ -249,11 +348,10 @@ def tela_status(extra=""):
 
     return page(f"""
       <div class='card'>
-        <h1>🔌 OpenDongle</h1>
+        <h1>📊 Status e saúde</h1>
         {badge}
         <p>{linha}</p>
         <p>Modo atual: <b>{modo}</b></p>{ssid}
-        {extra}
         <p style='margin-top:16px'>Para acessar este painel a qualquer
         momento, digite <b>opendongle.local</b> (ou {eng.ip_lan()}).</p>
       </div>
@@ -265,23 +363,166 @@ def tela_status(extra=""):
         <h2>🧩 Hardware</h2>
         {_resumo_hardware()}
       </div>
-      <div class='card'>
-        <h2>Configurar</h2>
-        <a class='btn' href='/config'><button class='sec'>⚙️ Abrir
-        configurações</button></a>
-      </div>""")
+      """, "Status e saúde")
 
 
-def tela_escolha():
-    return page("""
+# Índice de busca com sinônimos coloquiais (título, rota, palavras).
+BUSCA = [
+    ("Status e saúde do sistema", "/status", "status saude cpu ram memoria disco temperatura ligado internet"),
+    ("Senha de administração", "/senha", "senha admin trocar password login entrar"),
+    ("Nome, fuso horário e backup", "/sistema", "hostname nome fuso hora horario backup restaurar reset fabrica"),
+    ("Aparência (claro e escuro)", "/geral", "tema escuro claro modo noturno aparencia cor"),
+    ("Wi-Fi e hotspot", "/hotspot", "wifi hotspot nome da rede senha do wifi ssid ponto de acesso modo"),
+    ("Conectar a uma rede Wi-Fi", "/wifi", "conectar wifi cliente rede casa internet"),
+    ("Modem 4G e chip", "/modem", "4g chip sim operadora apn sinal modem celular"),
+    ("LAN, DHCP e IP fixo", "/rede", "lan dhcp ip fixo reservar aparelhos conectados clientes"),
+    ("Firewall e portas", "/firewall", "firewall porta redirecionar abrir ssh bloquear"),
+    ("Navegação via Tor", "/tor", "tor anonimo privacidade onion"),
+    ("Acesso remoto (Tailscale)", "/remoto", "remoto tailscale vpn acessar de longe exit node"),
+    ("Bluetooth", "/bluetooth", "bluetooth parear fone caixa teclado mouse"),
+    ("LEDs", "/leds", "led luz luzes piscar"),
+    ("Áudio", "/audio", "audio som fone microfone volume"),
+]
+
+
+def tela_inicio(extra=""):
+    st = eng.status()
+    badge = ("<span class='badge b-ok'>conectado à internet</span>" if st["internet"]
+             else "<span class='badge b-er'>sem internet</span>")
+    modo = {"hotspot": "Ponto de acesso (hotspot)", "wifi": "Conectado a um Wi-Fi",
+            "indefinido": "Wi-Fi ocioso"}.get(st["modo"], st["modo"])
+    indice = json.dumps([{"t": t, "u": u, "p": pal} for t, u, pal in BUSCA],
+                        ensure_ascii=False).replace("</", "<\\/")
+    cats = CATEGORIAS + ([CAT_AVANCADAS] if _ctx("avancadas") else [])
+    return page(f"""
       <div class='card'>
-        <h1>🔌 OpenDongle</h1>
-        <p>Como você quer usar seu dongle?</p>
-        <a class='btn' href='/status'><button>📡 Deixar como hotspot de
-        internet</button></a>
-        <a class='btn' href='/wifi'><button class='sec'>📶 Conectar o
-        dongle a uma rede Wi-Fi</button></a>
-      </div>""")
+        <input id='busca' type='search' placeholder='🔎 Buscar ajuste (ex.: senha do wifi)'
+               autocomplete='off'>
+        <div id='resultados'></div>
+      </div>
+      <div class='card'>
+        <h1>🔌 OpenDongle</h1>{badge}
+        <p>{_e(modo)}{" · rede " + _e(st['hotspot_ssid']) if st.get('hotspot_ssid') else ""}</p>
+        {extra}
+        {item("📊", "Status e saúde", "CPU, RAM, disco e temperatura", "/status")}
+      </div>
+      <div class='card'>
+        {"".join(item(ic, nome, "", rota) for _, ic, nome, rota in cats)}
+      </div>
+      <script>
+      (function(){{
+        const idx={indice};
+        const tira=t=>t.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();
+        const caixa=document.getElementById('busca'), res=document.getElementById('resultados');
+        caixa.addEventListener('input',()=>{{
+          const q=tira(caixa.value.trim()); res.innerHTML='';
+          if(!q) return;
+          idx.filter(x=>q.split(/\\s+/).every(w=>tira(x.t+' '+x.p).includes(w)))
+             .slice(0,8).forEach(x=>{{
+               const a=document.createElement('a'); a.className='item'; a.href=x.u;
+               a.textContent=x.t; res.appendChild(a); }});
+          if(!res.children.length) res.innerHTML="<p>Nada encontrado.</p>";
+        }});
+      }})();
+      </script>""", "OpenDongle")
+
+
+def tela_geral():
+    try:
+        pretty = next(l.split("=", 1)[1].strip().strip('"') for l in open("/etc/os-release")
+                      if l.startswith("PRETTY_NAME="))
+    except (OSError, StopIteration):
+        pretty = "Debian"
+    tema = _ctx("tema", "auto")
+    botoes = "".join(f"<button type='button' data-t='{v}' class='{'atual' if v == tema else ''}'>"
+                     f"{n}</button>" for v, n in (("auto", "Automático"), ("claro", "Claro"),
+                                                  ("escuro", "Escuro")))
+    return page(f"""
+      <div class='card'><h1>🖥️ Geral</h1>
+        {item("📊", "Status e saúde", "CPU, RAM, disco e temperatura", "/status")}
+        {item("🔑", "Senha de administração", "A senha deste painel e do SSH", "/senha")}
+        {item("🛠️", "Nome, fuso horário e backup", "Hostname, fuso, backup e reset", "/sistema")}
+      </div>
+      <div class='card'><h2>Aparência do painel</h2>
+        <div class='seg' id='tema'>{botoes}</div>
+      </div>
+      <div class='card'><h2>Sobre</h2>
+        <div id='versao'>{item("ℹ️", "OpenDongle", pretty)}</div>
+        <p id='dica' style='margin:4px 0 0;font-size:.85em'></p>
+      </div>
+      <script>
+      document.querySelectorAll('#tema [data-t]').forEach(b=>b.onclick=()=>{{
+        document.cookie='tema='+b.dataset.t+';path=/;max-age=31536000;samesite=strict';
+        document.documentElement.dataset.tema=b.dataset.t;
+        document.querySelectorAll('#tema button').forEach(x=>x.classList.toggle('atual',x===b));
+      }});
+      let toques=0;
+      document.getElementById('versao').onclick=()=>{{
+        toques++;
+        if(toques>=7){{document.cookie='avancadas=1;path=/;max-age=31536000;samesite=strict';
+          location.href='/avancadas';}}
+        else if(toques>=4){{document.getElementById('dica').textContent=
+          'Mais '+(7-toques)+' toques pra liberar as opções avançadas';}}
+      }};
+      </script>""", "Geral")
+
+
+def tela_internet():
+    try:
+        cfg = conf.carregar()
+    except (ValueError, OSError):
+        cfg = conf.PADRAO
+    w = cfg["wifi"]
+    modo = (f"Hotspot · {w['hotspot']['ssid']}" if w["modo"] == "hotspot"
+            else f"Cliente · {w['cliente']['ssid']}")
+    lig = lambda v: "ligado" if v else "desligado"
+    return page(f"""
+      <div class='card'><h1>🌐 Internet</h1>
+        {item("📡", "Wi-Fi e hotspot", modo, "/hotspot")}
+        {item("📶", "Conectar a uma rede Wi-Fi", "O hotspot desliga enquanto conectado", "/wifi")}
+        {item("📱", "Modem 4G e chip", "Operadora, sinal e APN", "/modem")}
+      </div>
+      <div class='card'><h2>Rede local</h2>
+        {item("🌐", "LAN, DHCP e IP fixo", f"IP do dongle {cfg['lan']['ip']}", "/rede")}
+        {item("🧱", "Firewall e portas", f"{len(cfg['firewall']['redirecionamentos'])} redirecionamento(s)", "/firewall")}
+      </div>
+      <div class='card'><h2>Privacidade e acesso de longe</h2>
+        {item("🧅", "Navegação via Tor", lig(cfg['tor']['ativo']), "/tor")}
+        {item("🔗", "Acesso remoto (Tailscale)", lig(cfg['remoto']['ativo']), "/remoto")}
+      </div>""", "Internet")
+
+
+def tela_dispositivos():
+    return page(f"""
+      <div class='card'><h1>🔌 Dispositivos</h1>
+        {item("🔵", "Bluetooth", "Parear e conectar aparelhos", "/bluetooth")}
+        {item("💡", "LEDs", "O que cada luz do dongle mostra", "/leds")}
+      </div>""", "Dispositivos")
+
+
+def tela_avancadas():
+    return page(f"""
+      <div class='card'><h1>🧰 Opções avançadas</h1>
+        {item("📜", "Logs do sistema", "journalctl por serviço", "/logs")}
+        {item("🩺", "Diagnóstico de hardware", "Áudio, Bluetooth, vídeo USB e modem", "/diagnostico")}
+        {item("🧮", "Memória por serviço", "RAM de cada serviço (PSS)", "/recursos")}
+      </div>
+      <div class='card'>
+        <button class='sec' type='button' onclick="document.cookie='avancadas=;path=/;max-age=0';
+          location.href='/geral'">Ocultar opções avançadas</button>
+      </div>""", "Opções avançadas")
+
+
+def tela_recursos():
+    r = eng.recursos()
+    linhas = "".join(item("⚙️", s_["unit"], f"{s_['kb'] / 1024:.1f} MB")
+                     for s_ in r["servicos"] if s_["kb"] >= 512)
+    return page(f"""
+      <div class='card'><h1>🧮 Memória por serviço</h1>
+        <p>RAM disponível: <b>{r['ram_disponivel_kb'] // 1024} MB</b> de
+        {r['ram_total_kb'] // 1024} MB · métrica {_e(r['metrica'])}</p>
+        {linhas}
+      </div>""", "Memória por serviço")
 
 
 def tela_wifi(erro=""):
@@ -309,34 +550,36 @@ def tela_wifi(erro=""):
           <button>Conectar</button>
         </form>
         {msg(erro,'er')}
-        <a class='btn' href='/'><button class='sec'>Voltar</button></a>
       </div>""")
 
 
-def tela_config(logado, m=""):
-    if not logado:
-        return page(f"""
-          <div class='card'>
-            <h1>⚙️ Configurações</h1>
-            <p>Entre com a senha de administração para continuar.</p>
-            <form method='post' action='/login'>
-              <label>Senha de administração</label>
-              <input name='senha' type='password' required>
-              <button>Entrar</button>
-            </form>{msg(m,'er')}
-          </div>""")
+def tela_login(m="", voltar="/"):
+    return page(f"""
+      <div class='card'>
+        <h1>🔑 Entrar</h1>
+        <p>Entre com a senha de administração para continuar.</p>
+        <form method='post' action='/login'>
+          <input type='hidden' name='voltar' value='{_e(voltar)}'>
+          <label>Senha de administração</label>
+          <input name='senha' type='password' required autofocus>
+          <button>Entrar</button>
+        </form>{msg(m,'er')}
+      </div>""", "Entrar")
+
+
+def tela_hotspot(m="", erro=False):
     st = eng.status()
     return page(f"""
       <div class='card'>
-        <h1>⚙️ Configurações</h1>
-        <p>Modo: <b>{st['modo']}</b> · Internet:
-        <b>{'sim' if st['internet'] else 'não'}</b></p>{msg(m,'ok')}
+        <h1>📡 Wi-Fi e hotspot</h1>
+        <p>Modo: <b>{_e(st['modo'])}</b> · Internet:
+        <b>{'sim' if st['internet'] else 'não'}</b></p>{msg(m, 'er' if erro else 'ok')}
       </div>
       <div class='card'>
-        <h2>📡 Nome e senha do hotspot</h2>
+        <h2>Nome e senha do hotspot</h2>
         <form method='post' action='/set-hotspot'>
           <label>Nome da rede (SSID)</label>
-          <input name='ssid' value='{html.escape(st.get('hotspot_ssid') or '')}'
+          <input name='ssid' value='{_e(st.get('hotspot_ssid') or '')}'
                  maxlength='32' required>
           <label>Senha (8 a 63 caracteres)</label>
           <input name='senha' type='password' minlength='8' maxlength='63'
@@ -348,40 +591,29 @@ def tela_config(logado, m=""):
         </form>
       </div>
       <div class='card'>
-        <h2>🔀 Modo de operação</h2>
+        <h2>Modo de operação</h2>
         <div class='row'>
           <form method='post' action='/mode-hotspot'>
             <button class='sec'>Virar hotspot</button></form>
           <a class='btn' href='/wifi'><button class='sec'>Conectar
           Wi-Fi</button></a>
         </div>
-      </div>
+      </div>""", "Wi-Fi e hotspot")
+
+
+def tela_senha(m="", erro=False):
+    return page(f"""
       <div class='card'>
-        <h2>🔑 Senha de administração</h2>
+        <h1>🔑 Senha de administração</h1>
+        <p>É a senha deste painel e do usuário do sistema (SSH). Ao trocar,
+        as outras sessões abertas do painel são encerradas.</p>
+        {msg(m, 'er' if erro else 'ok')}
         <form method='post' action='/set-password'>
           <label>Nova senha (mín. 6)</label>
           <input name='senha' type='password' minlength='6' required>
           <button>Trocar senha</button>
         </form>
-      </div>
-      <div class='card'>
-        <h2>🧩 Hardware</h2>
-        <a class='btn' href='/bluetooth'><button class='sec'>🔵 Bluetooth</button></a>
-        <a class='btn' href='/modem'><button class='sec'>📶 Modem 4G</button></a>
-        <a class='btn' href='/audio'><button class='sec'>🎧 Áudio</button></a>
-        <a class='btn' href='/diagnostico'><button class='sec'>🩺
-        Diagnóstico completo</button></a>
-      </div>
-      <div class='card'>
-        <h2>🌐 Rede e sistema</h2>
-        <a class='btn' href='/rede'><button class='sec'>🌐 LAN e DHCP</button></a>
-        <a class='btn' href='/firewall'><button class='sec'>🧱 Firewall</button></a>
-        <a class='btn' href='/sistema'><button class='sec'>🛠️ Sistema, LEDs e
-        backup</button></a>
-        <a class='btn' href='/tor'><button class='sec'>🧅 Navegação via Tor</button></a>
-        <a class='btn' href='/remoto'><button class='sec'>🔗 Acesso remoto
-        (Tailscale)</button></a>
-      </div>""")
+      </div>""", "Senha de administração")
 
 
 def _linha_dispositivo(d, acao=None):
@@ -404,7 +636,6 @@ def tela_bluetooth(logado, m="", erro=False, encontrados=None):
     if not bt["ok"]:
         return page(f"""<div class='card'><h1>🔵 Bluetooth</h1>
           {msg(bt['erro'], 'er')}
-          <a class='btn' href='/status'><button class='sec'>Voltar</button></a>
           </div>""")
 
     estado = ("<span class='badge b-ok'>ligado</span>" if bt["ligado"]
@@ -458,10 +689,7 @@ def tela_bluetooth(logado, m="", erro=False, encontrados=None):
         {pareados_html}
       </div>
       {acoes}
-      {encontrados_html}
-      <div class='card'>
-        <a class='btn' href='/status'><button class='sec'>Voltar</button></a>
-      </div>""")
+      {encontrados_html}""")
 
 
 def tela_modem(logado, m="", erro=False):
@@ -515,10 +743,7 @@ def tela_modem(logado, m="", erro=False):
         {corpo}
         {msg(m, 'er' if erro else 'ok')}
       </div>
-      {acoes}
-      <div class='card'>
-        <a class='btn' href='/status'><button class='sec'>Voltar</button></a>
-      </div>""")
+      {acoes}""")
 
 
 def tela_audio(logado, m="", erro=False):
@@ -548,10 +773,7 @@ def tela_audio(logado, m="", erro=False):
         {resultado}
         {msg(m, 'er' if erro else 'ok')}
       </div>
-      {acao}
-      <div class='card'>
-        <a class='btn' href='/status'><button class='sec'>Voltar</button></a>
-      </div>""")
+      {acao}""")
 
 
 def tela_diagnostico(logado):
@@ -582,10 +804,7 @@ def tela_diagnostico(logado):
         {linhas}
         {rodape}
       </div>
-      {acao}
-      <div class='card'>
-        <a class='btn' href='/status'><button class='sec'>Voltar</button></a>
-      </div>""")
+      {acao}""")
 
 
 # ---------- rede, firewall e sistema (equivalente ao LuCI) ----------
@@ -593,9 +812,8 @@ def _e(v):
     return html.escape(str(v), quote=True)
 
 
-def _voltar(destino="/config"):
-    return (f"<div class='card'><a class='btn' href='{destino}'>"
-            "<button class='sec'>Voltar</button></a></div>")
+def _voltar(destino=None):
+    return ""   # o topo de cada página já tem "‹ Categoria"
 
 
 def _resultado(r):
@@ -735,14 +953,6 @@ def tela_sistema(r=None):
         return page(f"<div class='card'>{msg(cfg['erro'], 'er')}"
                     f"{_form_restaurar()}</div>" + _voltar())
     s = cfg["config"]["sistema"]
-    leds = "".join(
-        f"<form method='post' action='/led'><input type='hidden' name='led' value='{_e(led)}'>"
-        f"<label>{_e(led)}</label><div class='row'><select name='gatilho'>"
-        + "".join(f"<option value='{_e(v)}'{' selected' if v == atual else ''}>{_e(t)}</option>"
-                  for v, t in GATILHOS_LED)
-        + "</select><button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>"
-          "Aplicar</button></div></form>"
-        for led, atual in s["leds"].items())
     return page(f"""
       <div class='card'>
         <h1>🛠️ Sistema</h1>{_resultado(r)}
@@ -753,11 +963,6 @@ def tela_sistema(r=None):
           <input name='fuso' value='{_e(s['fuso'])}' required>
           <button>Salvar</button>
         </form>
-      </div>
-      <div class='card'><h2>💡 LEDs</h2>{leds}</div>
-      <div class='card'>
-        <h2>📜 Logs</h2>
-        <a class='btn' href='/logs'><button class='sec'>Ver logs do sistema</button></a>
       </div>
       <div class='card'>
         <h2>💾 Backup</h2>
@@ -776,6 +981,25 @@ def tela_sistema(r=None):
           <button>Voltar à configuração de fábrica</button>
         </form>
       </div>{_voltar()}""")
+
+
+def tela_leds(r=None):
+    cfg = eng.config_show()
+    if not cfg["ok"]:
+        return page(f"<div class='card'>{msg(cfg['erro'], 'er')}</div>", "LEDs")
+    leds = "".join(
+        f"<form method='post' action='/led'><input type='hidden' name='led' value='{_e(led)}'>"
+        f"<label>{_e(led)}</label><div class='row'><select name='gatilho'>"
+        + "".join(f"<option value='{_e(v)}'{' selected' if v == atual else ''}>{_e(t)}</option>"
+                  for v, t in GATILHOS_LED)
+        + "</select><button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>"
+          "Aplicar</button></div></form>"
+        for led, atual in cfg["config"]["sistema"]["leds"].items())
+    return page(f"""
+      <div class='card'><h1>💡 LEDs</h1>
+        <p>No automático, as luzes mostram papel USB, modo do Wi-Fi e internet.</p>
+        {_resultado(r)}{leds}
+      </div>""", "LEDs")
 
 
 def _form_restaurar():
@@ -940,6 +1164,22 @@ class Painel(BaseHTTPRequestHandler):
         return any(_sessao_valida(x.strip().removeprefix("s="))
                    for x in c.split(";") if x.strip().startswith("s="))
 
+    def _cookie(self, nome):
+        for parte in self.headers.get("Cookie", "").split(";"):
+            chave, _, valor = parte.strip().partition("=")
+            if chave == nome:
+                return valor
+        return None
+
+    def _contexto(self, path):
+        """Categoria (barra lateral e "‹ voltar"), tema e opções avançadas da
+        requisição atual, lidos por page() sem mudar a assinatura das telas."""
+        _CTX.path = path
+        _CTX.categoria = categoria_da_rota(path)
+        tema = self._cookie("tema")
+        _CTX.tema = tema if tema in ("auto", "claro", "escuro") else "auto"
+        _CTX.avancadas = self._cookie("avancadas") == "1"
+
     def _form(self):
         n = int(self.headers.get("Content-Length", 0) or 0)
         d = urllib.parse.parse_qs(self.rfile.read(n).decode())
@@ -956,14 +1196,15 @@ class Painel(BaseHTTPRequestHandler):
         # de casa, no modo cliente) e não pode ser mandado pra LAN USB
         if host not in ("opendongle.local", "opendongle") and not _eh_ip(host):
             return self._redir(f"http://{ip}/")
-        if path == "/" :
-            return self._send(tela_escolha())
-        if path == "/status":
-            return self._send(tela_status())
-        if path == "/wifi":
-            return self._send(tela_wifi())
+        self._contexto(path)
+        publicas = {"/": tela_inicio, "/status": tela_status, "/wifi": tela_wifi,
+                    "/geral": tela_geral, "/internet": tela_internet,
+                    "/dispositivos": tela_dispositivos, "/confirmar": tela_confirmar}
+        if path in publicas:
+            return self._send(publicas[path]())
         if path == "/config":
-            return self._send(tela_config(self._logado()))
+            return (self._redir("/") if self._logado()
+                    else self._send(tela_login(voltar="/")))
         if path == "/bluetooth":
             return self._send(tela_bluetooth(self._logado()))
         if path == "/modem":
@@ -972,13 +1213,13 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_audio(self._logado()))
         if path == "/diagnostico":
             return self._send(tela_diagnostico(self._logado()))
-        if path == "/confirmar":
-            return self._send(tela_confirmar())
         protegidas = {"/rede": tela_rede, "/firewall": tela_firewall,
-                      "/sistema": tela_sistema, "/tor": tela_tor, "/remoto": tela_remoto}
+                      "/sistema": tela_sistema, "/tor": tela_tor, "/remoto": tela_remoto,
+                      "/hotspot": tela_hotspot, "/senha": tela_senha, "/leds": tela_leds,
+                      "/avancadas": tela_avancadas, "/recursos": tela_recursos}
         if path in protegidas or path in ("/logs", "/backup.json"):
             if not self._logado():
-                return self._send(tela_config(False))
+                return self._send(tela_login(voltar=path))
             if path == "/logs":
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 return self._send(tela_logs(q.get("u", [""])[0]))
@@ -1003,14 +1244,16 @@ class Painel(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         f = self._form()
+        self._contexto(path)
         if path == "/login":
-            # valida a senha de admin reusando o sistema: tenta um no-op
-            # que só root/senha-correta faria? Aqui validamos via PAM
-            # simplificado: a troca real de senha exige root de qualquer
-            # forma. Para o login do painel, conferimos contra /etc/shadow.
+            # senha conferida contra /etc/shadow (a mesma do sistema)
+            voltar = f.get("voltar") or "/"
+            if not voltar.startswith("/") or voltar.startswith("//"):
+                voltar = "/"   # só caminho local: nada de redirecionar pra fora
             if _checa_admin(f.get("senha", "")):
-                return self._redir("/config", _cookie_sessao())
-            return self._send(tela_config(False, "Senha incorreta."))
+                return self._redir(voltar, _cookie_sessao())
+            _CTX.categoria = categoria_da_rota(voltar)
+            return self._send(tela_login("Senha incorreta.", voltar))
         if path == "/wifi":
             # aceita o SSID digitado manualmente OU o escolhido na lista
             ssid = (f.get("ssid_manual") or "").strip() or \
@@ -1018,8 +1261,8 @@ class Painel(BaseHTTPRequestHandler):
                    (f.get("ssid") or "").strip()
             r = eng.connect_wifi(ssid, f.get("senha", ""))
             if r["ok"]:
-                return self._send(tela_status(
-                    msg("Conectado! " + r.get("aviso", ""))))
+                _CTX.categoria = None
+                return self._send(tela_inicio(msg("Conectado! " + r.get("aviso", ""))))
             return self._send(tela_wifi(r["erro"]))
         if path == "/rede-confirmar":
             # sem login de propósito: depois de trocar o IP da LAN o cookie
@@ -1052,7 +1295,7 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_sistema(eng.sistema_set(
                 f.get("hostname"), f.get("fuso"))))
         if path == "/led":
-            return self._send(tela_sistema(eng.led_set(
+            return self._send(tela_leds(eng.led_set(
                 f.get("led", ""), f.get("gatilho", ""))))
         if path == "/restaurar":
             return self._send(tela_sistema(eng.restaurar(f.get("backup", ""))))
@@ -1072,19 +1315,19 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_sistema(eng.reset()))
         if path == "/set-hotspot":
             r = eng.set_hotspot(f.get("ssid"), f.get("senha"))
-            return self._send(tela_config(True,
-                (r.get("aviso") if r["ok"] else r["erro"])))
+            return self._send(tela_hotspot(r.get("aviso") if r["ok"] else r["erro"],
+                                           erro=not r["ok"]))
         if path == "/mode-hotspot":
             r = eng.mode_hotspot()
-            return self._send(tela_config(True,
-                "Hotspot ativado." if r["ok"] else r["erro"]))
+            return self._send(tela_hotspot("Hotspot ativado." if r["ok"] else r["erro"],
+                                           erro=not r["ok"]))
         if path == "/set-password":
             r = eng.set_password(f.get("senha", ""))
             if not r["ok"]:
-                return self._send(tela_config(True, r["erro"]))
+                return self._send(tela_senha(r["erro"], erro=True))
             # senha nova derruba todas as outras sessões; esta ganha uma nova
             _chave(renovar=True)
-            return self._send(tela_config(True, r.get("aviso")),
+            return self._send(tela_senha(r.get("aviso")),
                               extra={"Set-Cookie": _cookie_sessao()})
         if path == "/bluetooth-power":
             r = eng.bluetooth_power(f.get("ligar") == "1")
