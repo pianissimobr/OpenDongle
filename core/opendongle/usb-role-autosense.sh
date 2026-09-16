@@ -26,27 +26,42 @@ LOG=/var/log/usb-role-autosense.log
 
 # dependencias necessarias (bluez=BT, libqmi-utils=4G, iw=wifi mon/diag)
 DEPS="bluez libqmi-utils iw"
+# perifericos USB (~28MB): alsa-utils=audio USB, v4l-utils=webcam,
+# firmware-realtek=BT/rede USB Realtek. Instalados numa chamada separada:
+# firmware-realtek depende do componente non-free-firmware no sources.list,
+# e se ele faltar nao pode derrubar a instalacao de BT/4G acima.
+DEPS_USB="alsa-utils v4l-utils firmware-realtek"
 INSTALL_DEPS="${USB_INSTALL_DEPS:-1}"    # 0 desativa auto-instalacao
 
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG" 2>/dev/null || true; }
 
+faltando() {
+    local p out=""
+    for p in "$@"; do dpkg -s "$p" >/dev/null 2>&1 || out="$out $p"; done
+    echo $out
+}
+
+apt_install() {
+    env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" \
+        -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef >/dev/null 2>&1 \
+        && log "deps: instalados com sucesso [$*]" \
+        || log "deps: FALHA no apt-get install [$*]"
+}
+
 # instalacao plug-and-play das dependencias (so instala se faltar; precisa internet na 1a vez)
 ensure_deps() {
     command -v apt-get >/dev/null 2>&1 || { log "deps: apt-get ausente"; return 1; }
-    local miss=0 p
-    for p in $DEPS; do
-        if ! dpkg -s "$p" >/dev/null 2>&1; then log "deps: pacote '$p' ausente"; miss=1; fi
-    done
-    [ "$miss" -eq 0 ] && { log "deps: ja presentes"; return 0; }
+    local miss miss_usb
+    miss=$(faltando $DEPS)
+    miss_usb=$(faltando $DEPS_USB)
+    [ -z "$miss$miss_usb" ] && { log "deps: ja presentes"; return 0; }
+    log "deps: ausentes [$miss $miss_usb]"
     [ "$INSTALL_DEPS" = "1" ] || { log "deps: auto-instalacao desativada (USB_INSTALL_DEPS=0)"; return 0; }
-    log "deps: instalando [$DEPS] (precisa internet)"
+    log "deps: instalando (precisa internet)"
     if env DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1; then
-        if env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $DEPS \
-             -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef >/dev/null 2>&1; then
-            log "deps: instalados com sucesso [$DEPS]"
-        else
-            log "deps: FALHA no apt-get install [$DEPS]"
-        fi
+        [ -n "$miss" ] && apt_install $miss
+        [ -n "$miss_usb" ] && apt_install $miss_usb
+        apt-get clean >/dev/null 2>&1
     else
         log "deps: apt-get update falhou (sem internet agora; rodar novamente quando houver)"
     fi

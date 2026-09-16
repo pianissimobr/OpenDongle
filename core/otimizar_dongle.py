@@ -186,7 +186,7 @@ def montar_etapas():
 
     # 6. Desligar serviços inúteis num dongle headless (libera RAM/escrita).
     #    Cada um é mascarado (reversível com unmask). Só mexe se existir.
-    inuteis = ["ModemManager", "bluetooth", "cups", "cups-browsed",
+    inuteis = ["ModemManager", "cups", "cups-browsed",
                "avahi-daemon", "man-db.timer", "apt-daily.timer",
                "apt-daily-upgrade.timer", "e2scrub_all.timer"]
     # OBS: ModemManager é desligado por padrão porque estes dongles servem

@@ -12,6 +12,8 @@ Coloca no dongle, via SSH:
   - serviço systemd de descoberta na rede (responde probe UDP com o IP,
     pra ferramentas/opendongle_localizar.py achar o dongle sem mDNS)
   - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
+  - módulos do Bluetooth e LED triggers carregados em todo boot, e o
+    bluetooth.service (bluetoothd) desmascarado e ativo
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
   - reinicia o dongle no final, pra ativar o usb-role-autosense de vez
@@ -128,6 +130,15 @@ RestartSec=3
 WantedBy=multi-user.target
 """
 
+# Vêm no kernel msm8916 como módulo mas nada os carrega sozinho: perfis BT
+# (rfcomm/hidp/bnep), drivers de adaptador BT USB e os LED triggers extras.
+MODULOS_BT = ["btqcomsmd", "btqca", "btusb", "btintel", "btrtl", "btbcm",
+              "rfcomm", "hidp", "bnep"]
+MODULOS_LEDTRIG = ["ledtrig-activity", "ledtrig-backlight", "ledtrig-camera",
+                   "ledtrig-gpio", "ledtrig-netdev", "ledtrig-oneshot",
+                   "ledtrig-pattern", "ledtrig-transient", "ledtrig-tty"]
+MODULES_LOAD = "\n".join(MODULOS_BT + MODULOS_LEDTRIG) + "\n"
+
 # avahi: publica o host como opendongle.local (mDNS)
 AVAHI_HOSTNAME = "opendongle"
 
@@ -240,6 +251,17 @@ def main():
         "cat > /etc/systemd/system/opendongle-discovery.service << \"EOF\"\n"
         + UNIT_DISCOVERY +
         "EOF\n"
+        "cat > /etc/modules-load.d/opendongle.conf << \"EOF\"\n"
+        + MODULES_LOAD +
+        "EOF\n"
+        "modprobe -a " + " ".join(MODULOS_BT + MODULOS_LEDTRIG) +
+        " || echo \"aviso: algum modulo do Bluetooth/LED nao carregou\"\n"
+        # versões antigas do otimizar_dongle.py mascaravam o bluetooth.service;
+        # sem o bluetoothd, o bluetoothctl do painel não funciona. Não é fatal:
+        # sem bluez ainda, o usb-role-autosense instala no próximo boot.
+        "systemctl unmask bluetooth.service >/dev/null 2>&1; "
+        "systemctl enable --now bluetooth.service >/dev/null 2>&1 "
+        "|| echo \"aviso: bluetooth.service nao ativou (bluez ausente?)\"\n"
         "systemctl daemon-reload && "
         "systemctl enable --now opendongle.service && "
         "systemctl enable --now opendongle-uplink.service && "
