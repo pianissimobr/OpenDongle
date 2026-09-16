@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 
 import opendongle_config as conf
 
@@ -54,6 +55,18 @@ WAN_IFS = (WAN_4G, "wlan0")
 LAN6 = "dead:beef::/64"     # ULA que a imagem base já usa (IPv6 fica como está)
 LAN6_IP = "dead:beef::1"
 
+TOR_TRANS_PORTA = 9040
+TOR_DNS_PORTA = 9053
+TORRC = "/etc/tor/torrc"
+SVC_TOR = "tor.service"
+
+TS_IF = "tailscale0"
+TS_PORTA = 41641
+TS_REDE4 = "100.64.0.0/10"
+TS_REDE6 = "fd7a:115c:a1e0::/48"
+SVC_TS = "tailscaled.service"
+TS_DROPIN = "/etc/systemd/system/tailscaled.service.d/opendongle.conf"
+
 CABECALHO = "# GERADO pelo OpenDongle a partir de /etc/opendongle/config.json\n" \
             "# Não edite: use o painel ou 'sudo opendongle config'.\n"
 
@@ -85,7 +98,10 @@ def _ip_da_faixa(rede, octeto):
 def gerar_dnsmasq(cfg):
     rede = _rede_lan(cfg)
     dhcp = cfg["lan"]["dhcp"]
-    if cfg["dns"]["criptografado"]:
+    if cfg["tor"]["ativo"]:
+        # com Tor, o DNS da LAN também sai pela rede Tor (sem vazamento)
+        servidores = [f"server=127.0.0.1#{TOR_DNS_PORTA}"]
+    elif cfg["dns"]["criptografado"]:
         servidores = ["server=127.0.0.1#5353", "server=::1#5353"]
     else:
         servidores = [f"server={s}" for s in cfg["dns"]["servidores"]]
@@ -100,7 +116,8 @@ def gerar_dnsmasq(cfg):
         "no-resolv",
         *servidores,
         # sem dnsproxy na frente, o cache é do próprio dnsmasq (pouca RAM)
-        "cache-size=" + ("0" if cfg["dns"]["criptografado"] else "150"),
+        "cache-size=" + ("0" if cfg["dns"]["criptografado"] and not cfg["tor"]["ativo"]
+                         else "150"),
         "no-negcache",
         "domain-needed",
         "bogus-priv",
@@ -150,6 +167,25 @@ def gerar_firewall(cfg):
         f"dnat ip to {r['ip']}:{r['porta_interna']} comment \"{r['nome']}\"\n"
         for r in fw["redirecionamentos"])
 
+    tor_forward = tor_nat = ""
+    if cfg["tor"]["ativo"]:
+        # antes do "established": conexões abertas antes de ligar o Tor não
+        # continuam saindo direto. UDP, ICMP e IPv6 da LAN não passam pelo
+        # Tor, então são bloqueados (senão vazariam o IP real)
+        tor_forward = (f'\t\tiifname "{LAN_IF}" oifname != {{ "{LAN_IF}", "{TS_IF}" }} '
+                       'drop comment "tor: nada sai da LAN sem passar pelo Tor"\n')
+        tor_nat = (f'\t\tiifname "{LAN_IF}" ip daddr != {rede} ip protocol tcp '
+                   f"dnat ip to {cfg['lan']['ip']}:{TOR_TRANS_PORTA} "
+                   'comment "tor: TCP da LAN vai pro TransPort"\n')
+
+    remoto_input = remoto_nat = ""
+    if cfg["remoto"]["ativo"]:
+        # conexão direta entre aparelhos do Tailscale (sem isso cai no relay)
+        remoto_input = f"\t\tiifname {wan} udp dport {TS_PORTA} accept\n"
+        if cfg["remoto"]["saida"]:
+            remoto_nat = (f"\t\tip saddr {TS_REDE4} oifname {wan} masquerade\n"
+                          f"\t\tip6 saddr {TS_REDE6} oifname {wan} masquerade\n")
+
     return CABECALHO + f"""
 table inet opendongle
 delete table inet opendongle
@@ -163,14 +199,14 @@ table inet opendongle {{
 \t\tmeta l4proto {{ icmp, ipv6-icmp }} accept
 \t\t# respostas de DHCP no modo cliente chegam em broadcast (sem conntrack)
 \t\tiifname {wan} udp dport {{ 68, 546 }} accept
-{regras_wan}\t\tiifname {wan} drop
+{remoto_input}{regras_wan}\t\tiifname {wan} drop
 \t}}
 
 \tchain forward {{
 \t\ttype filter hook forward priority filter; policy accept;
 \t\t# MSS clamping: evita páginas travando no 4G (MTU menor que 1500)
 \t\toifname {wan} tcp flags syn tcp option maxseg size set rt mtu
-\t\tct state established,related accept
+{tor_forward}\t\tct state established,related accept
 \t\tct state invalid drop
 \t\tct status dnat accept
 \t\tiifname {wan} drop
@@ -186,13 +222,13 @@ table inet opendongle_nat {{
 \t\t# redirect: o kernel msm8916 não tem o módulo nft_redir.
 \t\tiifname "{LAN_IF}" meta l4proto {{ tcp, udp }} th dport 53 dnat ip to {cfg['lan']['ip']}
 \t\tiifname "{LAN_IF}" meta l4proto {{ tcp, udp }} th dport 53 dnat ip6 to {LAN6_IP}
-{redir}\t}}
+{tor_nat}{redir}\t}}
 
 \tchain postrouting {{
 \t\ttype nat hook postrouting priority srcnat;
 \t\tip saddr {rede} ip daddr != {rede} masquerade
 \t\tip6 saddr {LAN6} ip6 daddr != {LAN6} masquerade
-\t}}
+{remoto_nat}\t}}
 }}
 """
 
@@ -291,6 +327,34 @@ network={{
 \tscan_ssid=1
 \t{seguranca}
 }}
+"""
+
+
+def gerar_torrc(cfg):
+    # TransPort só no IP da LAN (nunca no Wi-Fi de casa nem no 4G); DNS e
+    # .onion via DNSPort local, que o dnsmasq usa como upstream
+    return CABECALHO + f"""SocksPort 0
+TransPort {cfg['lan']['ip']}:{TOR_TRANS_PORTA} IsolateClientAddr
+DNSPort 127.0.0.1:{TOR_DNS_PORTA}
+AutomapHostsOnResolve 1
+VirtualAddrNetworkIPv4 10.192.0.0/10
+AvoidDiskWrites 1
+Log notice syslog
+"""
+
+
+# tor sobe no boot antes da br0 ter IP -> falha no bind do TransPort
+TOR_DROPIN = "/etc/systemd/system/tor@default.service.d/opendongle.conf"
+TOR_DROPIN_CONTEUDO = CABECALHO + """[Unit]
+After=systemd-networkd.service
+
+[Service]
+Restart=on-failure
+RestartSec=5
+"""
+TS_DROPIN_CONTEUDO = CABECALHO + """[Service]
+# /dev/net/tun só existe depois do módulo carregado (não vem como nó estático)
+ExecStartPre=-/sbin/modprobe tun
 """
 
 
@@ -437,6 +501,79 @@ def _aplicar_leds(cfg):
         except OSError as e:
             raise RuntimeError(f"LED {led}: gatilho {gatilho} não aceito ({e})")
         mudou.append(f"led {led}={gatilho}")
+    return mudou
+
+
+def _dropin(caminho, conteudo):
+    if _gravar_se_mudou(caminho, conteudo):
+        _run(["systemctl", "daemon-reload"])
+        return True
+    return False
+
+
+def _aplicar_tor(cfg):
+    """Liga (ou desliga) o daemon Tor. O firewall/dnsmasq de cada modo vêm dos
+    geradores; aqui é só o serviço e o torrc."""
+    mudou = []
+    if not cfg["tor"]["ativo"]:
+        if _ativo("tor@default.service") or \
+                _run(["systemctl", "is-enabled", "--quiet", SVC_TOR])[0] == 0:
+            _run(["systemctl", "disable", "--now", SVC_TOR, "tor@default.service"],
+                 timeout=60)
+            mudou.append("parou tor")
+        return mudou
+    if not os.path.exists("/usr/bin/tor"):
+        raise RuntimeError("Tor não está instalado.")
+    conf_mudou = _gravar_se_mudou(TORRC, gerar_torrc(cfg))
+    conf_mudou = _dropin(TOR_DROPIN, TOR_DROPIN_CONTEUDO) or conf_mudou
+    if conf_mudou or not _ativo("tor@default.service"):
+        _run(["systemctl", "enable", SVC_TOR])
+        rc, _, err = _run(["systemctl", "restart", "tor@default.service"], timeout=60)
+        if rc != 0:
+            raise RuntimeError(f"Tor não subiu: {err[:160]}")
+        mudou.append("reiniciou tor")
+    return mudou
+
+
+TS_ESTADO = "/etc/opendongle/.remoto-aplicado"
+
+
+def _flags_tailscale(cfg):
+    r = cfg["remoto"]
+    rotas = str(_rede_lan(cfg)) if r["lan"] else ""
+    return ["--accept-dns=false", f"--hostname={cfg['sistema']['hostname']}",
+            f"--advertise-routes={rotas}",
+            f"--advertise-exit-node={'true' if r['saida'] else 'false'}"]
+
+
+def _aplicar_remoto(cfg):
+    mudou = []
+    if not cfg["remoto"]["ativo"]:
+        if _ativo(SVC_TS) or _run(["systemctl", "is-enabled", "--quiet", SVC_TS])[0] == 0:
+            _run(["systemctl", "stop", "opendongle-tailscale-login.service"])
+            _run(["systemctl", "disable", "--now", SVC_TS], timeout=60)
+            mudou.append("parou tailscaled")
+        return mudou
+    if not os.path.exists("/usr/sbin/tailscaled"):
+        raise RuntimeError("Tailscale não está instalado.")
+    if _dropin(TS_DROPIN, TS_DROPIN_CONTEUDO) or not _ativo(SVC_TS):
+        _run(["systemctl", "enable", SVC_TS])
+        rc, _, err = _run(["systemctl", "restart", SVC_TS], timeout=60)
+        if rc != 0:
+            raise RuntimeError(f"tailscaled não subiu: {err[:160]}")
+        mudou.append("reiniciou tailscaled")
+    flags = _flags_tailscale(cfg)
+    if _ler(TS_ESTADO) != json.dumps(flags) or mudou:
+        # o daemon demora um instante pra abrir o socket depois do restart
+        for _ in range(10):
+            rc, _, err = _run(["tailscale", "set"] + flags, timeout=30)
+            if rc == 0:
+                break
+            time.sleep(1)
+        if rc != 0:
+            raise RuntimeError(f"tailscale set falhou: {err[:160]}")
+        _gravar(TS_ESTADO, json.dumps(flags), 0o600)
+        mudou.append("tailscale set")
     return mudou
 
 
@@ -627,6 +764,10 @@ def aplicar(cfg=None):
     # dnsproxy antes do dnsmasq: se o DNS criptografado for ligado, o
     # dnsmasq já sobe apontando pra um dnsproxy que está no ar
     try:
+        # Tor ligando: o daemon precisa estar no ar ANTES do firewall mandar
+        # o TCP da LAN pro TransPort e do dnsmasq usar o DNSPort
+        if cfg["tor"]["ativo"]:
+            mudou += _aplicar_tor(cfg)
         dnsproxy_mudou = _aplicar_dnsproxy(cfg["dns"]["criptografado"])
         if dnsproxy_mudou:
             mudou.append("dnsproxy")
@@ -660,6 +801,9 @@ def aplicar(cfg=None):
                             "a configuração anterior foi restaurada."}
         if rede_networkd():
             mudou += _aplicar_rede(cfg)
+        if not cfg["tor"]["ativo"]:   # desligando: só depois do firewall normal
+            mudou += _aplicar_tor(cfg)
+        mudou += _aplicar_remoto(cfg)
         mudou += _aplicar_leds(cfg)
         if _aplicar_hostname(cfg["sistema"]["hostname"]):
             mudou.append("hostname")

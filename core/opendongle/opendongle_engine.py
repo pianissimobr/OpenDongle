@@ -403,6 +403,155 @@ def logs(unidade="", linhas=200):
     return {"ok": True, "texto": out}
 
 
+# --------------------------------------------------------------- TOR E ACESSO REMOTO
+# Nenhum dos dois vem na instalação base (RAM): o pacote é baixado na primeira
+# vez que o usuário liga, e desligar para o daemon.
+def _apt_instalar(pacotes):
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+
+    def rodar(cmd, timeout):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+            return r.returncode, (r.stderr or r.stdout).strip()
+        except subprocess.TimeoutExpired:
+            return 124, "tempo esgotado"
+    rc, err = rodar(["apt-get", "update"], 300)
+    if rc != 0:
+        return f"Sem acesso aos repositórios (o dongle precisa de internet): {err[-160:]}"
+    rc, err = rodar(["apt-get", "install", "-y", "--no-install-recommends"] + pacotes, 600)
+    rodar(["apt-get", "clean"], 60)
+    return None if rc == 0 else f"Instalação falhou: {err[-160:]}"
+
+
+def tor_status():
+    try:
+        ativo = conf.carregar()["tor"]["ativo"]
+    except (ValueError, OSError):
+        ativo = False
+    rodando = aplic._ativo("tor@default.service")
+    progresso, detalhe = 0, ""
+    if rodando:
+        _, out, _ = _run(["journalctl", "-u", "tor@default", "-b", "-o", "cat",
+                          "--no-pager", "-g", "Bootstrapped"], timeout=15)
+        ultima = out.splitlines()[-1] if out else ""
+        m = re.search(r"Bootstrapped (\d+)%[^:]*: (.*)", ultima)
+        if m:
+            progresso, detalhe = int(m.group(1)), m.group(2)
+    return {"ok": True, "instalado": os.path.exists("/usr/bin/tor"), "ativo": ativo,
+            "rodando": rodando, "progresso": progresso, "detalhe": detalhe}
+
+
+def tor_set(ligar):
+    if ligar and not os.path.exists("/usr/bin/tor"):
+        err = _apt_instalar(["tor"])
+        if err:
+            return {"ok": False, "erro": err}
+    r = _mudar_e_aplicar(lambda cfg: cfg["tor"].update(ativo=bool(ligar)),
+                         "Navegação via Tor ligada: a conexão com a rede Tor leva "
+                         "alguns segundos." if ligar else "Navegação via Tor desligada.")
+    return r
+
+
+def _tailscale_json():
+    rc, out, _ = _run(["tailscale", "status", "--json"], timeout=15)
+    try:
+        return json.loads(out) if out else {}
+    except ValueError:
+        return {}
+
+
+def remoto_status():
+    try:
+        r = conf.carregar()["remoto"]
+    except (ValueError, OSError):
+        r = dict(conf.PADRAO["remoto"])
+    instalado = os.path.exists("/usr/sbin/tailscaled")
+    st = _tailscale_json() if instalado and aplic._ativo(aplic.SVC_TS) else {}
+    eu = st.get("Self") or {}
+    return {"ok": True, "instalado": instalado, "ativo": r["ativo"], "lan": r["lan"],
+            "saida": r["saida"], "estado": st.get("BackendState", "Stopped"),
+            "link_login": st.get("AuthURL") or "",
+            "ips": eu.get("TailscaleIPs") or [],
+            "nome": (eu.get("DNSName") or "").rstrip(".")}
+
+
+def _instalar_tailscale():
+    codinome = "trixie"
+    try:
+        for linha in open("/etc/os-release"):
+            if linha.startswith("VERSION_CODENAME="):
+                codinome = linha.split("=", 1)[1].strip().strip('"') or codinome
+    except OSError:
+        pass
+    base = f"https://pkgs.tailscale.com/stable/debian/{codinome}"
+    for url, destino in ((f"{base}.noarmor.gpg",
+                          "/usr/share/keyrings/tailscale-archive-keyring.gpg"),
+                         (f"{base}.tailscale-keyring.list",
+                          "/etc/apt/sources.list.d/tailscale.list")):
+        rc, _, err = _run(["curl", "-fsSL", "--max-time", "60", "-o", destino, url], timeout=90)
+        if rc != 0:
+            return f"Não baixei o repositório do Tailscale (precisa de internet): {err[:120]}"
+    return _apt_instalar(["tailscale"])
+
+
+def remoto_login(espera=30):
+    """Pede um link de login ao Tailscale (roda o 'tailscale up' em segundo
+    plano: ele fica esperando o login e não pode travar o painel)."""
+    if not aplic._ativo(aplic.SVC_TS):
+        return {"ok": False, "erro": "Ligue o acesso remoto primeiro."}
+    st = remoto_status()
+    if st["estado"] == "Running":
+        return {"ok": True, "aviso": "Já está conectado."}
+    try:
+        cfg = conf.carregar()
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+    # um pedido de login já em andamento é reaproveitado: reiniciar o
+    # 'tailscale up' descartaria o registro que o servidor ainda vai responder
+    if not aplic._ativo("opendongle-tailscale-login.service"):
+        _run(["systemd-run", "--unit=opendongle-tailscale-login", "--collect",
+              "tailscale", "up", "--reset"] + aplic._flags_tailscale(cfg))
+    prazo = time.monotonic() + espera
+    while time.monotonic() < prazo:
+        st = remoto_status()
+        if st["link_login"] or st["estado"] == "Running":
+            break
+        time.sleep(1)
+    if st["estado"] == "Running":
+        return {"ok": True, "aviso": "Conectado ao Tailscale."}
+    if st["link_login"]:
+        return {"ok": True, "link_login": st["link_login"],
+                "aviso": "Abra o link pra entrar na sua conta do Tailscale."}
+    # visto ao vivo: o primeiro registro no servidor do Tailscale pode levar
+    # mais de um minuto; o link aparece no status assim que chegar
+    return {"ok": True, "aviso": "Pedindo o link de login ao Tailscale (a primeira "
+            "vez pode levar 1 a 2 minutos). Atualize em instantes."}
+
+
+def remoto_set(ligar, lan=False, saida=False):
+    if ligar and not os.path.exists("/usr/sbin/tailscaled"):
+        err = _instalar_tailscale()
+        if err:
+            return {"ok": False, "erro": err}
+    r = _mudar_e_aplicar(
+        lambda cfg: cfg["remoto"].update(ativo=bool(ligar), lan=bool(lan), saida=bool(saida)),
+        "Acesso remoto ligado." if ligar else "Acesso remoto desligado.")
+    if r["ok"] and ligar and remoto_status()["estado"] != "Running":
+        login = remoto_login()
+        r.update({k: v for k, v in login.items() if k in ("link_login", "aviso")})
+    if r["ok"] and ligar and (lan or saida):
+        r["aviso"] += (" Rotas da LAN e saída pela internet precisam ser aprovadas "
+                       "no painel de admin do Tailscale.")
+    return r
+
+
+def remoto_logout():
+    rc, _, err = _run(["tailscale", "logout"], timeout=30)
+    if rc != 0:
+        return {"ok": False, "erro": f"Falha ao sair: {err[:120]}"}
+    return {"ok": True, "aviso": "Saiu da conta do Tailscale."}
+
+
 # --------------------------------------------------------------- HOTSPOT
 def set_hotspot(ssid, senha):
     """Troca nome e senha do hotspot. ATENÇÃO: aplica reiniciando a

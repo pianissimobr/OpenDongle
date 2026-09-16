@@ -48,6 +48,11 @@ PADRAO = {
     # acham o dongle em casa.
     "firewall": {"redirecionamentos": [], "wifi_cliente_confiavel": True,
                  "ssh_pela_wan": False, "painel_pela_wan": False},
+    # navegação dos aparelhos da LAN pela rede Tor (proxy transparente)
+    "tor": {"ativo": False},
+    # Tailscale: acessar o dongle de longe; lan = anuncia a sub-rede da LAN,
+    # saida = dongle vira exit node (internet dele usada de longe)
+    "remoto": {"ativo": False, "lan": False, "saida": False},
 }
 
 RE_MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
@@ -168,6 +173,10 @@ def validar(cfg):
         for chave in ("wifi_cliente_confiavel", "ssh_pela_wan", "painel_pela_wan"):
             if not isinstance(fw[chave], bool):
                 erros.append(f"firewall.{chave} deve ser true/false.")
+        for secao, chaves in (("tor", ("ativo",)), ("remoto", ("ativo", "lan", "saida"))):
+            for chave in chaves:
+                if not isinstance(cfg[secao][chave], bool):
+                    erros.append(f"{secao}.{chave} deve ser true/false.")
         externas = set()
         for r in fw["redirecionamentos"]:
             nome = r.get("nome", "")

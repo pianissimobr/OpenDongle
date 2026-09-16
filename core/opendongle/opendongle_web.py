@@ -291,6 +291,9 @@ def tela_config(logado, m=""):
         <a class='btn' href='/firewall'><button class='sec'>🧱 Firewall</button></a>
         <a class='btn' href='/sistema'><button class='sec'>🛠️ Sistema, LEDs e
         backup</button></a>
+        <a class='btn' href='/tor'><button class='sec'>🧅 Navegação via Tor</button></a>
+        <a class='btn' href='/remoto'><button class='sec'>🔗 Acesso remoto
+        (Tailscale)</button></a>
       </div>""")
 
 
@@ -717,6 +720,104 @@ def tela_logs(unidade=""):
       </div>{_voltar('/sistema')}""")
 
 
+def tela_tor(r=None):
+    st = eng.tor_status()
+    if not st["ativo"]:
+        estado = "<span class='badge b-er'>desligado</span>"
+    elif not st["rodando"]:
+        estado = "<span class='badge b-er'>ligado, mas o Tor não está rodando</span>"
+    elif st["progresso"] < 100:
+        estado = (f"<span class='badge b-av'>conectando à rede Tor: "
+                  f"{st['progresso']}%</span><p>{_e(st['detalhe'])}</p>")
+    else:
+        estado = "<span class='badge b-ok'>ligado: navegação pela rede Tor</span>"
+    botao = ("<input type='hidden' name='ligar' value='0'><button class='sec'>"
+             "Desligar navegação via Tor</button>" if st["ativo"] else
+             "<input type='hidden' name='ligar' value='1'><button>Ligar navegação "
+             "via Tor</button>")
+    instalar = "" if st["instalado"] else (
+        "<div class='aviso'>Na primeira vez o dongle baixa o Tor (~6 MB): precisa "
+        "de internet e leva alguns minutos.</div>")
+    return page(f"""
+      <div class='card'>
+        <h1>🧅 Navegação via Tor</h1>
+        {estado}{_resultado(r)}
+        <p>Ligado, tudo que os aparelhos conectados ao dongle (hotspot e USB)
+        acessam passa pela rede Tor, sem configurar nada neles. O DNS também.</p>
+        <div class='aviso'>Enquanto estiver ligado: a navegação fica mais lenta;
+        chamadas de vídeo, jogos e outros usos de UDP param de funcionar; IPv6
+        fica bloqueado; alguns sites recusam acesso vindo do Tor. Pra anonimato
+        de verdade, use também o Tor Browser — o Tor na rede esconde o IP, mas
+        não o navegador. Enquanto ligado, o Tor usa ~60 MB de RAM.</div>
+        {instalar}
+        <form method='post' action='/tor'>{botao}</form>
+      </div>
+      <div class='card'>
+        <a class='btn' href='/tor'><button class='sec'>Atualizar status</button></a>
+      </div>{_voltar()}""")
+
+
+def tela_remoto(r=None):
+    st = eng.remoto_status()
+    link = (r or {}).get("link_login") or st["link_login"]
+    if not link.startswith("https://"):   # vira href: nada de javascript: etc.
+        link = ""
+    if not st["ativo"]:
+        estado = "<span class='badge b-er'>desligado</span>"
+    elif st["estado"] == "Running":
+        ips = ", ".join(_e(ip) for ip in st["ips"])
+        estado = (f"<span class='badge b-ok'>conectado</span>"
+                  f"<p>Nome: <b>{_e(st['nome'])}</b><br>IP: <b>{ips}</b><br>De qualquer "
+                  f"aparelho na sua conta Tailscale, abra http://{_e(st['ips'][0]) if st['ips'] else ''}"
+                  f" pra este painel.</p>")
+    elif link:
+        estado = (f"<span class='badge b-av'>falta entrar na conta</span>"
+                  f"<p><a style='color:var(--ac)' href='{_e(link)}' target='_blank' "
+                  f"rel='noopener'>Abrir o login do Tailscale</a></p>")
+    else:
+        estado = (f"<span class='badge b-av'>{_e(st['estado'])}</span>"
+                  "<a class='btn' href='/remoto'><button class='sec'>Atualizar"
+                  "</button></a>")
+
+    def caixa(nome, texto):
+        marcado = " checked" if st[nome] else ""
+        return (f"<label style='display:flex;gap:10px;align-items:center'>"
+                f"<input type='checkbox' name='{nome}' value='1' style='width:auto'"
+                f"{marcado}>{texto}</label>")
+    acoes = ""
+    if st["ativo"]:
+        acoes = f"""
+      <div class='card'>
+        <div class='row'>
+          <form method='post' action='/remoto-login'><button class='sec'>Gerar link
+          de login</button></form>
+          <form method='post' action='/remoto-logout'><button class='sec'>Sair da
+          conta</button></form>
+        </div>
+        <form method='post' action='/remoto'><input type='hidden' name='ligar' value='0'>
+          <button class='sec'>Desligar acesso remoto</button></form>
+      </div>"""
+    instalar = "" if st["instalado"] else (
+        "<div class='aviso'>Na primeira vez o dongle baixa o Tailscale (~35 MB) do "
+        "repositório oficial deles: precisa de internet e leva alguns minutos.</div>")
+    return page(f"""
+      <div class='card'>
+        <h1>🔗 Acesso remoto</h1>
+        {estado}{_resultado(r)}
+        <p>Com o Tailscale, você acessa este dongle de qualquer lugar, sem abrir
+        portas no roteador nem precisar de IP público (funciona até no 4G).</p>
+        <form method='post' action='/remoto'>
+          <input type='hidden' name='ligar' value='1'>
+          {caixa('lan', 'Também acessar os aparelhos conectados ao dongle (LAN)')}
+          {caixa('saida', 'Usar a internet do dongle de longe (exit node)')}
+          <div class='aviso'>As duas opções acima precisam ser aprovadas no painel de
+          admin do Tailscale depois de ligar. Usa ~30 MB de RAM.</div>
+          {instalar}
+          <button>{'Salvar' if st['ativo'] else 'Ligar acesso remoto'}</button>
+        </form>
+      </div>{acoes}{_voltar()}""")
+
+
 def tela_confirmar(r=None):
     return page(f"""
       <div class='card'>
@@ -787,7 +888,7 @@ class Painel(BaseHTTPRequestHandler):
         if path == "/confirmar":
             return self._send(tela_confirmar())
         protegidas = {"/rede": tela_rede, "/firewall": tela_firewall,
-                      "/sistema": tela_sistema}
+                      "/sistema": tela_sistema, "/tor": tela_tor, "/remoto": tela_remoto}
         if path in protegidas or path in ("/logs", "/backup.json"):
             if not self._logado():
                 return self._send(tela_config(False))
@@ -870,6 +971,15 @@ class Painel(BaseHTTPRequestHandler):
                 f.get("led", ""), f.get("gatilho", ""))))
         if path == "/restaurar":
             return self._send(tela_sistema(eng.restaurar(f.get("backup", ""))))
+        if path == "/tor":
+            return self._send(tela_tor(eng.tor_set(f.get("ligar") == "1")))
+        if path == "/remoto":
+            return self._send(tela_remoto(eng.remoto_set(
+                f.get("ligar") == "1", f.get("lan") == "1", f.get("saida") == "1")))
+        if path == "/remoto-login":
+            return self._send(tela_remoto(eng.remoto_login()))
+        if path == "/remoto-logout":
+            return self._send(tela_remoto(eng.remoto_logout()))
         if path == "/reset":
             if f.get("confirmacao", "").strip() != "RESET":
                 return self._send(tela_sistema(

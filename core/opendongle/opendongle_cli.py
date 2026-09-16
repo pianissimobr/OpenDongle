@@ -116,6 +116,14 @@ def main():
     p.add_argument("--ip")
     p.add_argument("--porta-interna", type=int)
 
+    p = sub.add_parser("tor", help="navegação da LAN pela rede Tor")
+    p.add_argument("acao", choices=["on", "off", "status"])
+
+    p = sub.add_parser("remoto", help="acesso remoto via Tailscale")
+    p.add_argument("acao", choices=["on", "off", "status", "login", "logout"])
+    p.add_argument("--lan", action="store_true", help="anuncia a LAN do dongle")
+    p.add_argument("--saida", action="store_true", help="dongle vira exit node")
+
     p = sub.add_parser("logs", help="log do sistema (ou de um serviço)")
     p.add_argument("unidade", nargs="?", default="", choices=list(eng.UNITS_LOG))
     p.add_argument("-n", type=int, default=200)
@@ -204,6 +212,34 @@ def main():
         res = (eng.fw_redir_add(args.nome, args.proto, args.porta_externa, args.ip,
                                 args.porta_interna)
                if args.acao == "add" else eng.fw_redir_rm(args.nome))
+    elif args.cmd == "tor":
+        if args.acao == "status":
+            res = eng.tor_status()
+            if not args.json:
+                print(f"Tor: {'ligado' if res['ativo'] else 'desligado'}"
+                      f"{' (rodando, ' + str(res['progresso']) + '%)' if res['rodando'] else ''}"
+                      f"{'' if res['instalado'] else ' — não instalado'}")
+                return
+        else:
+            res = eng.tor_set(args.acao == "on")
+    elif args.cmd == "remoto":
+        if args.acao == "status":
+            res = eng.remoto_status()
+            if not args.json:
+                print(f"Acesso remoto: {'ligado' if res['ativo'] else 'desligado'} "
+                      f"({res['estado']}) LAN={res['lan']} saída={res['saida']}")
+                for campo in ("nome", "ips", "link_login"):
+                    if res[campo]:
+                        print(f"  {campo}: {res[campo]}")
+                return
+        elif args.acao in ("on", "off"):
+            res = eng.remoto_set(args.acao == "on", args.lan, args.saida)
+        elif args.acao == "login":
+            res = eng.remoto_login()
+        else:
+            res = eng.remoto_logout()
+        if res.get("link_login") and not args.json:
+            print(f"Login: {res['link_login']}")
     elif args.cmd == "logs":
         res = eng.logs(args.unidade, args.n)
         if res["ok"] and not args.json:

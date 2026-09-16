@@ -100,6 +100,8 @@ sudo opendongle config set lan.dhcp.inicio=20       # altera e aplica (como o uc
 sudo opendongle dhcp clientes                       # aparelhos conectados (fixar/soltar IP fixo)
 sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
 sudo opendongle logs dnsmasq                        # log do sistema ou de um serviço
+sudo opendongle tor on|off|status                   # navegação da LAN pela rede Tor (instala na 1ª vez)
+sudo opendongle remoto on [--lan] [--saida]         # acesso remoto via Tailscale (login|logout|status|off)
 sudo opendongle backup > backup.json                # exporta a config
 sudo opendongle restaurar backup.json               # restaura e aplica um backup
 sudo opendongle reset                               # volta à configuração de fábrica
