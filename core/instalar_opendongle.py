@@ -16,11 +16,13 @@ Coloca no dongle, via SSH:
     bluetooth.service (bluetoothd) desmascarado e ativo
   - config central em /etc/opendongle/config.json (migra SSID/senha/APNs
     atuais) aplicada: dnsmasq, firewall nftables, ip_forward e APN
+  - rede sem NetworkManager: systemd-networkd + hostapd (hotspot) ou
+    wpa_supplicant (cliente), com reversão automática se o acesso cair
   - avahi configurado para responder opendongle.local
   - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
   - reinicia o dongle no final, pra ativar o usb-role-autosense de vez
     (ele só decide o papel USB corretamente longe de uma instalação SSH
-    em andamento — ver nota no [2/6])
+    em andamento — ver nota no [2/7])
   - depois do reboot, espera o dongle voltar e roda um teste geral:
     serviços ativos, papel USB, avahi, o motor respondendo de fato, e um
     diagnóstico de hardware (áudio, Bluetooth, vídeo USB, modem 4G) —
@@ -137,7 +139,7 @@ def main():
         print("(sem chave SSH nem sshpass — a senha será pedida)")
         ssh = ["ssh"] + ssh_base + [f"{args.usuario}@{args.ip}"]
 
-    print("== [1/6] Enviando arquivos do painel...")
+    print("== [1/7] Enviando arquivos do painel...")
     # manda os 3 arquivos via tar por stdin (uma conexão)
     import tarfile, io
     buf = io.BytesIO()
@@ -150,7 +152,7 @@ def main():
     if r.returncode != 0:
         sys.exit("Falha no envio (senha errada?).")
 
-    print("== [2/6] Instalando motor, CLI e serviços (sudo)...")
+    print("== [2/7] Instalando motor, CLI e serviços (sudo)...")
     # usb-role-autosense.service NÃO sobe com --now de propósito: a própria
     # instalação está rodando por SSH sobre a rede USB (RNDIS = papel
     # "device"). Se o script reavaliar o papel USB agora e, por qualquer
@@ -222,6 +224,13 @@ def main():
         "|| echo \"aviso: bluetooth.service nao ativou (bluez ausente?)\"\n"
         # config central: na 1a vez migra SSID/senha/APNs atuais e gera
         # dnsmasq, firewall (nftables), ip_forward e APN
+        # rede sem NetworkManager (etapa [5/7]) precisa de hostapd e iw;
+        # sem internet agora, a instalação segue no NetworkManager
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+        "hostapd iw >/dev/null 2>&1 && apt-get clean "
+        "|| echo \"aviso: hostapd/iw nao instalados (sem internet?)\"\n"
+        # dongle não tem tela: o login no tty1 só ocupa RAM
+        "systemctl mask --now getty@tty1.service >/dev/null 2>&1\n"
         "python3 /opt/opendongle/opendongle_cli.py config aplicar "
         "|| echo \"aviso: config central nao aplicou (veja a mensagem acima)\"\n"
         "systemctl daemon-reload && "
@@ -241,7 +250,7 @@ def main():
         print(r.stderr.decode(errors="replace")[-400:])
         sys.exit("Serviço web não subiu — veja a saída acima.")
 
-    print("== [3/6] Configurando avahi (opendongle.local)...")
+    print("== [3/7] Configurando avahi (opendongle.local)...")
     avahi = (
         "sudo -S bash -c '"
         # reativa o avahi (o otimizador desliga por RAM; ligamos p/ .local)
@@ -277,7 +286,39 @@ def main():
         print("   ⚠ avahi não ativou — opendongle.local pode não resolver. "
               "Use o IP 192.168.100.1 como alternativa.")
 
-    print("== [4/6] Garantindo hotspot padrão OpenDongle/opendongle...")
+    print("== [4/7] Trocando o NetworkManager por systemd-networkd + hostapd...")
+    # Antes do hotspot padrão: assim a troca de SSID/senha já vai pela config
+    # central + hostapd (ativar AP pelo NM logo após modo cliente falhou ao
+    # vivo com "supplicant took too long"). A migração agenda sozinha uma
+    # reversão em 3 min. Só confirmamos depois
+    # de reconectar por SSH: se a rede USB não voltar, o dongle desfaz tudo.
+    r = subprocess.run(ssh + ["sudo -S /opt/opendongle/opendongle_cli.py rede migrar"],
+                       input=(args.senha + "\n").encode(), capture_output=True,
+                       timeout=180)
+    saida = (r.stdout.decode(errors="replace").strip()
+             or r.stderr.decode(errors="replace").strip())
+    print("   " + saida.replace("\n", "\n   ")[:400])
+    if r.returncode == 0 and "já usa" not in saida:
+        confirmado = False
+        prazo = time.time() + 120
+        while time.time() < prazo:
+            try:
+                r = subprocess.run(
+                    ssh + ["sudo -S /opt/opendongle/opendongle_cli.py rede confirmar"],
+                    input=(args.senha + "\n").encode(), capture_output=True, timeout=20)
+                if r.returncode == 0:
+                    confirmado = True
+                    break
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(3)
+        print("   ✓ rede nova confirmada" if confirmado else
+              "   ⚠ não reconectei pra confirmar: o dongle volta sozinho pro "
+              "NetworkManager em até 3 min")
+    elif r.returncode != 0:
+        print("   ⚠ migração não feita; o dongle segue no NetworkManager")
+
+    print("== [5/7] Garantindo hotspot padrão OpenDongle/opendongle...")
     hs = (
         "sudo -S /opt/opendongle/opendongle_cli.py hotspot "
         "--ssid OpenDongle --senha opendongle"
@@ -308,7 +349,7 @@ Observações honestas:
   reconectar (a página avisa isso ao usuário).
 """)
 
-    print("== [5/6] Reiniciando o dongle para ativar o usb-role-autosense...")
+    print("== [6/7] Reiniciando o dongle para ativar o usb-role-autosense...")
     # dispara o reboot em background, desanexado da sessão SSH: o 'sleep 2'
     # dá tempo do comando 'ssh' retornar normalmente antes da conexão cair
     # (sem isso, o subprocess.run ficaria esperando uma resposta que nunca
@@ -323,7 +364,7 @@ Observações honestas:
     except subprocess.TimeoutExpired:
         pass   # esperado se a conexão já tiver caído — o reboot já foi disparado
 
-    print("== [6/6] Esperando o dongle voltar pra rodar o teste geral...")
+    print("== [7/7] Esperando o dongle voltar pra rodar o teste geral...")
     def _porta_ssh_aberta():
         try:
             socket.create_connection((args.ip, 22), timeout=3).close()
@@ -373,6 +414,10 @@ Observações honestas:
         ("serviço usb-role-autosense", "systemctl is-active usb-role-autosense.service"),
         ("avahi (opendongle.local)",   "systemctl is-active avahi-daemon"),
         ("papel USB (informativo)",    "cat /sys/class/usb_role/ci_hdrc.0-role-switch/role"),
+        # /etc/opendongle é 0700 (sem sudo aqui): o NM mascarado é o sinal
+        ("rede (informativo)",         "[ \"$(systemctl is-enabled NetworkManager "
+                                       "2>/dev/null)\" = masked ] && echo systemd-networkd "
+                                       "|| echo NetworkManager"),
     ]
     problemas = []   # [(nome, detalhe)] — só o que realmente falhou
     for nome, cmd in checagens:

@@ -18,6 +18,7 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle backup > backup.json
   sudo opendongle restaurar backup.json
   sudo opendongle reset
+  sudo opendongle rede migrar|confirmar|reverter
 """
 
 import argparse
@@ -101,6 +102,10 @@ def main():
 
     sub.add_parser("reset", help="volta à configuração de fábrica")
 
+    p = sub.add_parser("rede", help="migra a rede pro systemd-networkd, "
+                       "confirma ou reverte a última mudança de rede")
+    p.add_argument("acao", choices=["migrar", "confirmar", "reverter"])
+
     args = ap.parse_args()
     precisa_root()
 
@@ -160,6 +165,8 @@ def main():
         except OSError as e:
             sys.exit(f"✗ não consegui ler {args.arquivo}: {e}")
         res = eng.restaurar(texto)
+    elif args.cmd == "rede":
+        res = eng.executar(f"rede-{args.acao}", {})
     elif args.cmd == "reset":
         if input("Voltar à configuração de fábrica? Digite 'sim': ").strip() != "sim":
             sys.exit("Cancelado.")

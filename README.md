@@ -99,6 +99,7 @@ sudo opendongle config show                         # config central (config apl
 sudo opendongle backup > backup.json                # exporta a config
 sudo opendongle restaurar backup.json               # restaura e aplica um backup
 sudo opendongle reset                               # volta à configuração de fábrica
+sudo opendongle rede confirmar                      # confirma mudança de rede (senão ela volta sozinha em 3 min)
 ```
 
 ---

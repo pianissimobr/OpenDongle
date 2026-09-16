@@ -9,7 +9,9 @@ puras (config -> texto), testáveis no PC. aplicar() valida tudo ANTES de
 gravar qualquer coisa, e só grava/recarrega o que mudou.
 """
 
+import hashlib
 import ipaddress
+import json
 import os
 import subprocess
 import tempfile
@@ -23,6 +25,23 @@ DNSMASQ_CONF = "/etc/dnsmasq.d/10-opendongle.conf"
 # a imagem OpenStick guarda o DHCP/DNS da br0 aqui; nosso arquivo substitui
 DNSMASQ_DA_IMAGEM = ["/etc/dnsmasq.d/dhcp.conf"]
 FIREWALL_NFT = "/etc/opendongle/firewall.nft"
+# rede sem NetworkManager: systemd-networkd + hostapd/wpa_supplicant
+FLAG_NETWORKD = "/etc/opendongle/rede-networkd"
+NET_BR0_NETDEV = "/etc/systemd/network/10-opendongle-br0.netdev"
+NET_BR0 = "/etc/systemd/network/11-opendongle-br0.network"
+NET_USB0 = "/etc/systemd/network/12-opendongle-usb0.network"
+NET_WLAN0 = "/etc/systemd/network/20-opendongle-wlan0.network"
+HOSTAPD_CONF = "/etc/hostapd/wlan0.conf"
+WPA_CONF = "/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"
+SVC_AP = "hostapd@wlan0.service"
+SVC_CLIENTE = "wpa_supplicant@wlan0.service"
+# serviços que a rede antiga usava e a nova substitui
+SVCS_NM = ["NetworkManager.service", "NetworkManager-wait-online.service",
+           "NetworkManager-dispatcher.service", "wpa_supplicant.service",
+           "networking.service"]
+REVERSAO = "/etc/opendongle/reversao.json"
+UNIT_REVERSAO = "opendongle-reversao"
+PRAZO_REVERSAO = 180
 NFTABLES_CONF = "/etc/nftables.conf"
 SYSCTL_CONF = "/etc/sysctl.d/90-opendongle.conf"
 HOSTS = "/etc/hosts"
@@ -178,6 +197,103 @@ table inet opendongle_nat {{
 """
 
 
+def _psk_hex(ssid, senha):
+    """PSK WPA2 pré-calculada (o mesmo que wpa_passphrase faz): o arquivo não
+    guarda a senha em texto e não há aspas pra escapar."""
+    return hashlib.pbkdf2_hmac("sha1", senha.encode(), ssid.encode(), 4096, 32).hex()
+
+
+def gerar_br0_netdev(cfg):
+    return CABECALHO + f"[NetDev]\nName={LAN_IF}\nKind=bridge\n\n[Bridge]\nSTP=no\n"
+
+
+def gerar_br0_network(cfg):
+    lan = cfg["lan"]
+    # RA e DHCPv6 continuam com o dnsmasq (enable-ra), como na imagem base
+    return CABECALHO + f"""[Match]
+Name={LAN_IF}
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Address={lan['ip']}/{lan['prefixo']}
+Address={LAN6_IP}/64
+ConfigureWithoutCarrier=yes
+LinkLocalAddressing=ipv6
+IPv6AcceptRA=no
+IPv6SendRA=no
+"""
+
+
+def gerar_usb0_network(cfg):
+    # o msm8916-usb-gadget só põe o usb0 na br0 se ela já existir no boot;
+    # aqui o networkd garante isso sem depender da ordem
+    return CABECALHO + f"""[Match]
+Name=usb0
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Bridge={LAN_IF}
+# porta de bridge não tem IP próprio; sem isso fica "configuring" pra sempre
+LinkLocalAddressing=no
+"""
+
+
+def gerar_wlan0_network(cfg):
+    return CABECALHO + """[Match]
+Name=wlan0
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+"""
+
+
+def gerar_hostapd(cfg):
+    hs = cfg["wifi"]["hotspot"]
+    return CABECALHO + f"""interface=wlan0
+bridge={LAN_IF}
+driver=nl80211
+ctrl_interface=/run/hostapd
+ssid2={hs['ssid'].encode().hex()}
+utf8_ssid=1
+country_code={hs['pais']}
+ieee80211d=1
+hw_mode=g
+channel={hs['canal']}
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_psk={_psk_hex(hs['ssid'], hs['senha'])}
+"""
+
+
+def gerar_wpa_supplicant(cfg):
+    cl, pais = cfg["wifi"]["cliente"], cfg["wifi"]["hotspot"]["pais"]
+    seguranca = (f"psk={_psk_hex(cl['ssid'], cl['senha'])}" if cl["senha"]
+                 else "key_mgmt=NONE")
+    return CABECALHO + f"""ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
+update_config=0
+country={pais}
+
+network={{
+\tssid={cl['ssid'].encode().hex()}
+\tscan_ssid=1
+\t{seguranca}
+}}
+"""
+
+
 def gerar_sysctl(cfg):
     # só IPv4: ligar forwarding IPv6 faz o kernel ignorar RA no wlan0 cliente
     # e mudaria o IPv6 que a imagem entrega hoje
@@ -296,6 +412,154 @@ def _aplicar_dnsproxy(ligar):
     return True
 
 
+# ------------------------------------------------------------ rede (networkd)
+def rede_networkd():
+    return os.path.exists(FLAG_NETWORKD)
+
+
+def _ativo(servico):
+    return _run(["systemctl", "is-active", "--quiet", servico])[0] == 0
+
+
+def _gravar_se_mudou(caminho, conteudo, modo=0o644):
+    if _ler(caminho) == conteudo:
+        return False
+    _gravar(caminho, conteudo, modo)
+    return True
+
+
+def _aplicar_rede(cfg):
+    """Gera networkd/hostapd/wpa_supplicant e deixa ativo só o serviço do
+    modo escolhido (o wcn36xx não faz AP e cliente ao mesmo tempo)."""
+    mudou = []
+    for caminho, conteudo in ((NET_BR0_NETDEV, gerar_br0_netdev(cfg)),
+                              (NET_BR0, gerar_br0_network(cfg)),
+                              (NET_USB0, gerar_usb0_network(cfg))):
+        if _gravar_se_mudou(caminho, conteudo):
+            mudou.append(caminho)
+    ap_mudou = _gravar_se_mudou(HOSTAPD_CONF, gerar_hostapd(cfg), 0o600)
+    cliente = cfg["wifi"]["modo"] == "cliente"
+    cl_mudou = cliente and _gravar_se_mudou(WPA_CONF, gerar_wpa_supplicant(cfg), 0o600)
+
+    if cliente:
+        if _gravar_se_mudou(NET_WLAN0, gerar_wlan0_network(cfg)):
+            mudou.append(NET_WLAN0)
+    elif os.path.exists(NET_WLAN0):
+        os.unlink(NET_WLAN0)
+        mudou.append(NET_WLAN0)
+
+    if mudou:
+        _run(["networkctl", "reload"])
+        for iface in ("br0", "usb0", "wlan0"):
+            _run(["networkctl", "reconfigure", iface])
+
+    liga, desliga, conf_mudou = ((SVC_CLIENTE, SVC_AP, cl_mudou) if cliente
+                                 else (SVC_AP, SVC_CLIENTE, ap_mudou))
+    if _ativo(desliga) or _run(["systemctl", "is-enabled", "--quiet", desliga])[0] == 0:
+        _run(["systemctl", "disable", "--now", desliga], timeout=40)
+        if not cliente:
+            # sem o wpa_supplicant o wlan0 fica com o IP do Wi-Fi antigo
+            _run(["ip", "addr", "flush", "dev", "wlan0"])
+        mudou.append(f"parou {desliga}")
+    if conf_mudou or not _ativo(liga):
+        _run(["systemctl", "enable", liga])
+        rc, _, err = _run(["systemctl", "restart", liga], timeout=40)
+        if rc != 0:
+            raise RuntimeError(f"{liga} não subiu: {err[:160]}")
+        mudou.append(f"reiniciou {liga}")
+    return mudou
+
+
+def _guardar_reversao(estado):
+    _gravar(REVERSAO, json.dumps(estado), 0o600)
+
+
+def agendar_reversao(estado):
+    """Equivalente ao 'apply com rollback' do LuCI: se ninguém confirmar em
+    PRAZO_REVERSAO segundos (acesso perdido), o dongle volta sozinho."""
+    _guardar_reversao(estado)
+    _run(["systemctl", "stop", f"{UNIT_REVERSAO}.timer"])
+    _run(["systemctl", "reset-failed", f"{UNIT_REVERSAO}.service"])
+    cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opendongle_cli.py")
+    rc, _, err = _run(["systemd-run", f"--unit={UNIT_REVERSAO}",
+                       f"--on-active={PRAZO_REVERSAO}",
+                       "/usr/bin/python3", cli, "rede", "reverter"])
+    if rc != 0:
+        raise RuntimeError(f"Não agendei a reversão automática: {err[:160]}")
+
+
+def confirmar():
+    pendente = os.path.exists(REVERSAO)
+    _run(["systemctl", "stop", f"{UNIT_REVERSAO}.timer"])
+    if pendente:
+        os.unlink(REVERSAO)
+    return {"ok": True, "aviso": "Configuração de rede confirmada." if pendente
+            else "Não havia mudança de rede aguardando confirmação."}
+
+
+def _ativar_rede_nm():
+    for caminho in (NET_BR0_NETDEV, NET_BR0, NET_USB0, NET_WLAN0, FLAG_NETWORKD):
+        if os.path.exists(caminho):
+            os.unlink(caminho)
+    _run(["systemctl", "disable", "--now", SVC_AP, SVC_CLIENTE], timeout=40)
+    _run(["networkctl", "reload"])
+    _run(["systemctl", "unmask"] + SVCS_NM)
+    _run(["systemctl", "enable"] + SVCS_NM)
+    _run(["systemctl", "restart", "wpa_supplicant.service", "NetworkManager.service"],
+         timeout=60)
+    # sem o .network, o networkd tira os IPs da br0 e o NM reativa a conexão
+    # "br0" dele sem endereço (visto ao vivo). Quem punha o IP no boot era o
+    # ifupdown2: reiniciá-lo devolve 192.168.100.1 (a rede USB pisca uns
+    # segundos; quem chama roda como unit do systemd, não morre junto)
+    _run(["systemctl", "restart", "networking.service"], timeout=90)
+
+
+def reverter():
+    try:
+        estado = json.loads(_ler(REVERSAO) or "")
+    except ValueError:
+        return {"ok": False, "erro": "Não há mudança de rede pra reverter."}
+    os.unlink(REVERSAO)
+    # reversão manual: sem isso o timer agendado dispara depois à toa
+    _run(["systemctl", "stop", f"{UNIT_REVERSAO}.timer"])
+    if estado.get("tipo") == "nm":
+        _ativar_rede_nm()
+        return {"ok": True, "aviso": "Rede revertida pro NetworkManager."}
+    conf.salvar(estado["config"])
+    r = aplicar(estado["config"])
+    if r["ok"]:
+        r["aviso"] = "Configuração de rede anterior restaurada."
+    return r
+
+
+def migrar_para_networkd():
+    """Troca NetworkManager + ifupdown2 por systemd-networkd + hostapd/
+    wpa_supplicant, mantendo SSID/senha/modo da config central. Agenda a
+    reversão automática ANTES de mexer: se o acesso cair, volta sozinho."""
+    if rede_networkd():
+        return {"ok": True, "aviso": "A rede já usa systemd-networkd."}
+    for binario in ("/usr/sbin/hostapd", "/usr/sbin/wpa_supplicant", "/usr/sbin/iw"):
+        if not os.path.exists(binario):
+            return {"ok": False, "erro": f"{os.path.basename(binario)} não instalado."}
+    cfg = conf.carregar()
+    agendar_reversao({"tipo": "nm"})
+    # mask sem --now no networking.service: pará-lo derruba a br0 (e o SSH)
+    _run(["systemctl", "disable", "--now", "NetworkManager.service",
+          "wpa_supplicant.service"], timeout=60)
+    _run(["systemctl", "disable", "networking.service"])
+    _run(["systemctl", "mask"] + SVCS_NM)
+    _gravar(FLAG_NETWORKD, "")
+    _run(["systemctl", "enable", "--now", "systemd-networkd.service"])
+    try:
+        mudou = _aplicar_rede(cfg)
+    except RuntimeError as e:
+        return {"ok": False, "erro": f"{e} — a reversão roda sozinha em "
+                f"{PRAZO_REVERSAO // 60} min, ou use 'opendongle rede reverter'."}
+    return {"ok": True, "mudou": mudou,
+            "aviso": f"Rede migrada. Confirme em até {PRAZO_REVERSAO // 60} min "
+                     "com 'opendongle rede confirmar', senão ela volta sozinha."}
+
+
 def aplicar(cfg=None):
     """Aplica a config inteira. Retorna {"ok", "mudou": [...]} ou
     {"ok": False, "erro"} sem ter gravado nada se algo não passar na
@@ -358,6 +622,8 @@ def aplicar(cfg=None):
             return {"ok": False, "mudou": mudou,
                     "erro": f"{' '.join(ativar)} falhou ({err[:160]}); "
                             "a configuração anterior foi restaurada."}
+        if rede_networkd():
+            mudou += _aplicar_rede(cfg)
         if _aplicar_hostname(cfg["sistema"]["hostname"]):
             mudou.append("hostname")
         if _aplicar_fuso(cfg["sistema"]["fuso"]):

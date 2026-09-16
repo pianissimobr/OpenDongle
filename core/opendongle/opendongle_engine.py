@@ -98,9 +98,25 @@ def tem_internet(max_idade=20):
     return valor
 
 
+def _wlan0_associado():
+    rc, out, _ = _run(["iw", "dev", IFACE_WIFI, "link"], timeout=5)
+    return rc == 0 and out.startswith("Connected")
+
+
+def _wlan0_tem_ipv4():
+    rc, out, _ = _run(["ip", "-o", "-4", "addr", "show", "dev", IFACE_WIFI], timeout=5)
+    return rc == 0 and " inet " in f" {out}"
+
+
 def modo_wifi():
     """'hotspot', 'wifi' (cliente), None (nenhum) ou 'erro' (sem resposta
     do gerenciador de rede)."""
+    if aplic.rede_networkd():
+        if aplic._ativo(aplic.SVC_AP):
+            return "hotspot"
+        if aplic._ativo(aplic.SVC_CLIENTE) and _wlan0_associado():
+            return "wifi"
+        return None
     rc, out, _ = _run(["nmcli", "-t", "-f", "NAME,DEVICE,STATE",
                        "connection", "show", "--active"])
     if rc != 0:
@@ -122,6 +138,11 @@ def _modo_atual():
 
 
 def _ssid_hotspot():
+    if aplic.rede_networkd():
+        try:
+            return conf.carregar()["wifi"]["hotspot"]["ssid"]
+        except (ValueError, OSError):
+            return "?"
     rc, out, _ = _run(["nmcli", "-t", "-f", "802-11-wireless.ssid",
                        "connection", "show", HOTSPOT_CON])
     if rc == 0 and ":" in out:
@@ -204,6 +225,15 @@ def set_hotspot(ssid, senha):
     err = conf.validar_ssid(ssid) or conf.validar_senha_wifi(senha or "")
     if err:
         return {"ok": False, "erro": err}
+    if aplic.rede_networkd():
+        err = _alterar_config(lambda c: c["wifi"]["hotspot"].update(ssid=ssid, senha=senha))
+        if err:
+            return {"ok": False, "erro": err}
+        r = config_aplicar()
+        if not r["ok"]:
+            return r
+        return {"ok": True, "ssid": ssid,
+                "aviso": "Reconecte-se ao Wi-Fi com o novo nome e senha."}
     passos = [
         ["nmcli", "connection", "modify", HOTSPOT_CON,
          "802-11-wireless.ssid", ssid],
@@ -230,6 +260,12 @@ def set_hotspot(ssid, senha):
 
 def mode_hotspot():
     """Volta ao modo ponto de acesso (compartilhando o 4G, se houver)."""
+    if aplic.rede_networkd():
+        err = _alterar_config(lambda c: c["wifi"].update(modo="hotspot"))
+        if err:
+            return {"ok": False, "erro": err}
+        r = config_aplicar()
+        return {"ok": True, "modo": "hotspot"} if r["ok"] else r
     _run(["nmcli", "device", "disconnect", IFACE_WIFI], timeout=20)
     rc, _, err = _run(["nmcli", "connection", "up", HOTSPOT_CON])
     if rc != 0:
@@ -250,6 +286,8 @@ def connect_wifi(ssid, senha):
     err = conf.validar_ssid(ssid) or (senha and conf.validar_senha_wifi(senha))
     if err:
         return {"ok": False, "erro": err}
+    if aplic.rede_networkd():
+        return _connect_wifi_networkd(ssid, senha)
     cmd = ["nmcli", "device", "wifi", "connect", ssid]
     if senha:
         cmd += ["password", senha]
@@ -265,6 +303,63 @@ def connect_wifi(ssid, senha):
             "aviso": "Modo cliente ativo; o hotspot foi desligado."}
 
 
+ESPERA_CONEXAO = 30   # segundos pra associar e pegar IP por DHCP
+
+
+def _connect_wifi_networkd(ssid, senha):
+    try:
+        anterior = conf.carregar()["wifi"]
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+    err = _alterar_config(lambda c: (c["wifi"].update(modo="cliente"),
+                                     c["wifi"]["cliente"].update(ssid=ssid, senha=senha)))
+    if err:
+        return {"ok": False, "erro": err}
+    r = config_aplicar()
+    if r["ok"]:
+        prazo = time.monotonic() + ESPERA_CONEXAO
+        while time.monotonic() < prazo:
+            if _wlan0_associado() and _wlan0_tem_ipv4():
+                return {"ok": True, "modo": "wifi", "ssid": ssid,
+                        "aviso": "Modo cliente ativo; o hotspot foi desligado."}
+            time.sleep(2)
+        motivo = ("não associou (senha errada ou rede fora de alcance?)"
+                  if not _wlan0_associado() else "associou mas não recebeu IP")
+    else:
+        motivo = r["erro"]
+    # não deixa o dongle sem Wi-Fi nenhum: volta ao que estava (em geral o
+    # hotspot, que é por onde o usuário estava configurando)
+    _alterar_config(lambda c: c.update(wifi=anterior))
+    config_aplicar()
+    return {"ok": False, "erro": f"Não conectou em {ssid}: {motivo}. "
+            "O modo anterior foi religado."}
+
+
+def _listar_wifi_iw():
+    """Scan via iw. Em modo AP o wcn36xx costuma recusar o scan normal;
+    'ap-force' pede mesmo assim."""
+    rc, out, _ = _run(["iw", "dev", IFACE_WIFI, "scan"], timeout=25)
+    if rc != 0:
+        rc, out, _ = _run(["iw", "dev", IFACE_WIFI, "scan", "ap-force"], timeout=25)
+    redes, atual = {}, None
+    for linha in (out or "").splitlines():
+        s = linha.strip()
+        if linha.startswith("BSS "):
+            atual = {"ssid": "", "sinal": 0, "seg": "aberta"}
+        elif atual is None:
+            continue
+        elif s.startswith("signal:"):
+            dbm = float(s.split()[1])
+            atual["sinal"] = max(0, min(100, int(2 * (dbm + 100))))
+        elif s.startswith("SSID:"):
+            atual["ssid"] = s[5:].strip()
+            if atual["ssid"] and atual["sinal"] >= redes.get(atual["ssid"], {}).get("sinal", -1):
+                redes[atual["ssid"]] = atual
+        elif s.startswith(("RSN:", "WPA:")):
+            atual["seg"] = "WPA2" if s.startswith("RSN") else "WPA"
+    return list(redes.values())
+
+
 def listar_wifi():
     """
     Escaneia redes Wi-Fi próximas. PROBLEMA conhecido do chip wcn36xx:
@@ -275,23 +370,30 @@ def listar_wifi():
          à rede que o próprio dongle emite);
       3) se vier vazio, avisamos que pode ser preciso alternar de modo.
     """
-    # nmcli dev wifi list já dispara rescan; repetimos para dar chance
-    # ao rádio de captar algo mesmo em AP.
-    _run(["nmcli", "device", "wifi", "rescan"], timeout=20)
-    rc, out, _ = _run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
-                       "device", "wifi", "list"], timeout=30)
     proprio = _ssid_hotspot()
-    redes, vistos = [], set()
-    for linha in (out or "").splitlines():
-        p = linha.split(":")
-        ssid = p[0] if p else ""
-        if not ssid or ssid in vistos:
-            continue
-        if ssid == proprio:        # não lista a própria rede do dongle
-            continue
-        vistos.add(ssid)
-        redes.append({"ssid": ssid, "sinal": p[1] if len(p) > 1 else "0",
-                      "seg": ":".join(p[2:]) or "aberta"})
+    if aplic.rede_networkd():
+        # o SSID vem inteiro (não dá split em ':'), então não passa pelo
+        # parser do nmcli abaixo
+        redes = [r for r in _listar_wifi_iw() if r["ssid"] != proprio]
+        for r in redes:
+            r["sinal"] = str(r["sinal"])
+    else:
+        # nmcli dev wifi list já dispara rescan; repetimos para dar chance
+        # ao rádio de captar algo mesmo em AP.
+        _run(["nmcli", "device", "wifi", "rescan"], timeout=20)
+        rc, out, _ = _run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
+                           "device", "wifi", "list"], timeout=30)
+        redes, vistos = [], set()
+        for linha in (out or "").splitlines():
+            p = linha.split(":")
+            ssid = p[0] if p else ""
+            if not ssid or ssid in vistos:
+                continue
+            if ssid == proprio:        # não lista a própria rede do dongle
+                continue
+            vistos.add(ssid)
+            redes.append({"ssid": ssid, "sinal": p[1] if len(p) > 1 else "0",
+                          "seg": ":".join(p[2:]) or "aberta"})
     redes.sort(key=lambda x: -int(x["sinal"] or 0))
     aviso = ("" if redes else
              "Nenhuma rede além da própria foi vista. O rádio está em "
@@ -638,6 +740,9 @@ ACOES = {
     "backup": lambda a: backup(),
     "restaurar": lambda a: restaurar(a.get("texto", "")),
     "reset": lambda a: reset(),
+    "rede-migrar": lambda a: aplic.migrar_para_networkd(),
+    "rede-confirmar": lambda a: aplic.confirmar(),
+    "rede-reverter": lambda a: aplic.reverter(),
 }
 
 
