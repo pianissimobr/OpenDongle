@@ -204,7 +204,8 @@ pra aplicar o patch manualmente uma primeira vez:
 ```
 # no PC, com o dongle plugado (aparece como /dev/ttyACM0):
 sudo screen /dev/ttyACM0 115200
-# dentro do dongle (já cai direto num shell root pelo console serial):
+# dentro do dongle (a imagem original entra direto como root; depois de
+# instalado o OpenDongle, o serial pede login: use o seu usuário ou o root):
 sed -i 's/parser\.readfp(configFP)/parser.read_file(configFP)/' \
     /usr/share/ifupdown2/ifupdown/main.py
 reboot

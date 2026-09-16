@@ -35,6 +35,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_ajuda as ajuda
 import opendongle_config as conf
 import opendongle_audio as aud
 import opendongle_bluetooth as bt
@@ -184,6 +185,11 @@ a.btn{{display:block;text-decoration:none;text-align:center}}
 .item small{{display:block;color:var(--mut);margin-top:2px}}.item .seta{{color:var(--mut)}}
 .seg{{display:flex;gap:6px}}.seg button{{margin:0;padding:10px;background:var(--sec);color:var(--tx)}}
 .seg button.atual{{background:var(--ac);color:#fff}}
+.faq details{{border-bottom:1px solid var(--br);padding:12px 0}}.faq details:last-of-type{{border-bottom:none}}
+.faq summary{{cursor:pointer;font-weight:600;list-style:none;display:flex;gap:10px}}
+.faq summary::-webkit-details-marker{{display:none}}.faq summary::after{{content:'›';margin-left:auto;color:var(--mut);transition:transform .15s}}
+.faq details[open] summary::after{{transform:rotate(90deg)}}.faq details p{{margin:10px 0 0;line-height:1.5}}
+.faq a{{color:var(--ac)}}
 dialog{{background:var(--card);color:var(--tx);border:1px solid var(--br);border-radius:14px;
  padding:20px;width:calc(100% - 32px);max-width:420px}}dialog::backdrop{{background:rgba(0,0,0,.6)}}
 </style>"""
@@ -193,7 +199,8 @@ CATEGORIAS = [("geral", "🖥️", "Geral", "/geral"),
               ("internet", "🌐", "Internet", "/internet"),
               ("dispositivos", "🔌", "Dispositivos", "/dispositivos"),
               ("audio", "🎧", "Áudio", "/audio"),
-              ("remoto", "🔗", "Acesso remoto", "/remoto")]
+              ("remoto", "🔗", "Acesso remoto", "/remoto"),
+              ("ajuda", "❓", "Ajuda", "/ajuda")]
 CAT_AVANCADAS = ("avancadas", "🧰", "Opções avançadas", "/avancadas")
 _CAT_POR_ID = {c[0]: c for c in CATEGORIAS + [CAT_AVANCADAS]}
 
@@ -210,6 +217,7 @@ ROTAS_CATEGORIA = {
     "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led", "/usb", "/usb-papel"),
     "audio": ("/audio", "/audio-test"),
     "remoto": ("/remoto", "/sessoes-encerrar", "/sessao-encerrar"),
+    "ajuda": ("/ajuda",),
     "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos", "/servicos",
                   "/servico-set", "/kernel", "/config-arquivo"),
 }
@@ -236,11 +244,16 @@ def _ctx(nome, padrao=None):
     return getattr(_CTX, nome, padrao)
 
 
+def _categorias(avancadas):
+    """Ordem da barra: as avançadas (quando liberadas) entram antes da Ajuda,
+    que fica sempre por último."""
+    return CATEGORIAS[:-1] + ([CAT_AVANCADAS] if avancadas else []) + CATEGORIAS[-1:]
+
+
 def _nav():
     atual = _ctx("categoria")
     # escondidas até os 7 toques, mas visíveis se a pessoa já está nelas
-    visivel = _ctx("avancadas") or atual == "avancadas"
-    cats = CATEGORIAS + ([CAT_AVANCADAS] if visivel else [])
+    cats = _categorias(_ctx("avancadas") or atual == "avancadas")
     return "<nav class='cat'>" + "".join(
         f"<a href='{rota}' class='{'atual' if cid == atual else ''}'>"
         f"<span>{ic}</span>{nome}</a>" for cid, ic, nome, rota in cats) + "</nav>"
@@ -406,6 +419,59 @@ BUSCA = [
 ]
 
 
+BUSCA += [(f"❓ {pergunta}", f"/ajuda#{id_}", palavras)
+          for _, itens in ajuda.FAQ for id_, pergunta, _, palavras in itens]
+
+
+def tela_ajuda():
+    st = eng.status()
+    trocas = {"{ip}": _e(eng.ip_lan()), "{ssid}": _e(eng.SSID_PADRAO),
+              "{senha_wifi}": _e(eng.SENHA_PADRAO)}
+
+    def resposta(texto):
+        for k, v in trocas.items():
+            texto = texto.replace(k, v)
+        return texto
+    grupos = "".join(
+        f"<div class='card faq'><h2>{_e(tema)}</h2>" + "".join(
+            f"<details id='{id_}' data-busca='{_e(pergunta + ' ' + palavras)}'>"
+            f"<summary>{_e(pergunta)}</summary><p>{resposta(texto)}</p></details>"
+            for id_, pergunta, texto, palavras in itens) + "</div>"
+        for tema, itens in ajuda.FAQ)
+    return page(f"""
+      <div class='card'>
+        <h1>❓ Ajuda</h1>
+        <p>Respostas rápidas pras dúvidas mais comuns. Toque numa pergunta pra ver a
+        resposta.</p>
+        <input id='faq-busca' type='search' placeholder='🔎 Buscar dúvida (ex.: esqueci a senha)'
+               autocomplete='off'>
+        <p id='faq-nada' style='display:none'>Nada encontrado. Tente outras palavras.</p>
+      </div>
+      {grupos}
+      <div class='card'>
+        <h2>Não achou a resposta?</h2>
+        {item("📊", "Status e saúde", "Internet: " + ("conectado" if st["internet"] else "sem conexão") + " · CPU, RAM e disco", "/status")}
+        {item("🩺", "Diagnóstico de hardware", "Testa áudio, Bluetooth, vídeo USB e modem", "/diagnostico")}
+      </div>
+      <script>
+      (function(){{
+        const tira=t=>t.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();
+        const itens=[...document.querySelectorAll('.faq details')];
+        const abre=()=>{{const d=location.hash&&document.getElementById(location.hash.slice(1));
+          if(d&&d.tagName==='DETAILS'){{d.open=true;d.scrollIntoView({{block:'center'}})}}}};
+        abre(); window.addEventListener('hashchange',abre);
+        document.getElementById('faq-busca').addEventListener('input',e=>{{
+          const q=tira(e.target.value.trim()).split(/\\s+/).filter(Boolean); let algum=false;
+          itens.forEach(d=>{{const ok=q.every(w=>tira(d.dataset.busca).includes(w));
+            d.style.display=ok?'':'none'; if(ok) algum=true;}});
+          document.querySelectorAll('.card.faq').forEach(c=>c.style.display=
+            [...c.querySelectorAll('details')].some(d=>d.style.display!=='none')?'':'none');
+          document.getElementById('faq-nada').style.display=algum?'none':'block';
+        }});
+      }})();
+      </script>""", "Ajuda")
+
+
 def tela_inicio(extra=""):
     st = eng.status()
     badge = ("<span class='badge b-ok'>conectado à internet</span>" if st["internet"]
@@ -414,7 +480,7 @@ def tela_inicio(extra=""):
             "indefinido": "Wi-Fi ocioso"}.get(st["modo"], st["modo"])
     indice = json.dumps([{"t": t, "u": u, "p": pal} for t, u, pal in BUSCA],
                         ensure_ascii=False).replace("</", "<\\/")
-    cats = CATEGORIAS + ([CAT_AVANCADAS] if _ctx("avancadas") else [])
+    cats = _categorias(_ctx("avancadas"))
     return page(f"""
       <div class='card'>
         <input id='busca' type='search' placeholder='🔎 Buscar ajuste (ex.: senha do wifi)'
@@ -1827,7 +1893,8 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_cadastro())
         publicas = {"/": tela_inicio, "/status": tela_status, "/wifi": tela_wifi,
                     "/geral": tela_geral, "/internet": tela_internet,
-                    "/dispositivos": tela_dispositivos, "/confirmar": tela_confirmar}
+                    "/dispositivos": tela_dispositivos, "/confirmar": tela_confirmar,
+                    "/ajuda": tela_ajuda}
         if path in publicas:
             return self._send(publicas[path]())
         if path == "/config":

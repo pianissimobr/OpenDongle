@@ -46,11 +46,18 @@ from pathlib import Path
 from otimizar_dongle import EARLYOOM_CONF
 
 BASE = Path(__file__).resolve().parent / "opendongle"
+SERIAL_LOGIN_CONF = """# GERADO pelo OpenDongle: o console serial pede login (a imagem usava --autologin root)
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -L %I 115200 vt100
+"""
+
 ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
         "opendongle_discovery.py", "opendongle_config.py",
         "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
         "opendongle_sistema.py", "opendongle_bluetooth.py", "opendongle_audio.py",
+        "opendongle_ajuda.py",
         "usb-role-autosense.sh"]
 
 # Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o
@@ -284,6 +291,13 @@ def main():
         "fi\n"
         # dongle não tem tela: o login no tty1 só ocupa RAM
         "systemctl mask --now getty@tty1.service >/dev/null 2>&1\n"
+        # console serial pela USB: a imagem entra direto como root; aqui passa
+        # a pedir login (usuário ou root com senha). Quem esquece a senha do
+        # usuário recupera pelo root; sem as duas, resta o EDL.
+        "mkdir -p /etc/systemd/system/getty@ttyGS0.service.d && "
+        "cat > /etc/systemd/system/getty@ttyGS0.service.d/10-opendongle-login.conf << \"EOF\"\n"
+        + SERIAL_LOGIN_CONF + "EOF\n"
+        "systemctl daemon-reload && systemctl try-restart getty@ttyGS0.service\n"
         "python3 /opt/opendongle/opendongle_cli.py config aplicar "
         "|| echo \"aviso: config central nao aplicou (veja a mensagem acima)\"\n"
         "systemctl daemon-reload && "
