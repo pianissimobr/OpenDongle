@@ -96,6 +96,10 @@ sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
 sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
 sudo opendongle recursos                            # RAM usada por serviço
 sudo opendongle config show                         # config central (config aplicar pra reaplicar)
+sudo opendongle config set lan.dhcp.inicio=20       # altera e aplica (como o uci set)
+sudo opendongle dhcp clientes                       # aparelhos conectados (fixar/soltar IP fixo)
+sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
+sudo opendongle logs dnsmasq                        # log do sistema ou de um serviço
 sudo opendongle backup > backup.json                # exporta a config
 sudo opendongle restaurar backup.json               # restaura e aplica um backup
 sudo opendongle reset                               # volta à configuração de fábrica

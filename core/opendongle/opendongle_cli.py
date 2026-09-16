@@ -15,6 +15,10 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle diagnostico
   sudo opendongle recursos
   sudo opendongle config show|aplicar
+  sudo opendongle config set lan.dhcp.inicio=20 dns.criptografado=true
+  sudo opendongle dhcp clientes|fixar|soltar --mac .. --ip .. --nome ..
+  sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
+  sudo opendongle logs [opendongle|dnsmasq|hostapd|wifi-cliente|rede|usb-4g]
   sudo opendongle backup > backup.json
   sudo opendongle restaurar backup.json
   sudo opendongle reset
@@ -92,8 +96,29 @@ def main():
 
     sub.add_parser("recursos", help="RAM usada por serviço")
 
-    p = sub.add_parser("config", help="mostra ou aplica a config central")
-    p.add_argument("acao", choices=["show", "aplicar"])
+    p = sub.add_parser("config", help="mostra, altera (set chave=valor) ou "
+                       "aplica a config central")
+    p.add_argument("acao", choices=["show", "set", "aplicar"])
+    p.add_argument("atribuicoes", nargs="*", metavar="chave=valor",
+                   help="ex: lan.dhcp.inicio=20 dns.criptografado=true")
+
+    p = sub.add_parser("dhcp", help="aparelhos conectados e IPs fixos")
+    p.add_argument("acao", choices=["clientes", "fixar", "soltar"])
+    p.add_argument("--mac")
+    p.add_argument("--ip")
+    p.add_argument("--nome")
+
+    p = sub.add_parser("redir", help="redirecionamento de portas")
+    p.add_argument("acao", choices=["add", "rm"])
+    p.add_argument("--nome", required=True)
+    p.add_argument("--proto", choices=["tcp", "udp"], default="tcp")
+    p.add_argument("--porta-externa", type=int)
+    p.add_argument("--ip")
+    p.add_argument("--porta-interna", type=int)
+
+    p = sub.add_parser("logs", help="log do sistema (ou de um serviço)")
+    p.add_argument("unidade", nargs="?", default="", choices=list(eng.UNITS_LOG))
+    p.add_argument("-n", type=int, default=200)
 
     sub.add_parser("backup", help="imprime a config (redirecione pra um arquivo)")
 
@@ -157,7 +182,33 @@ def main():
     elif args.cmd == "senha":
         res = eng.set_password(args.nova)
     elif args.cmd == "config":
-        res = eng.config_show() if args.acao == "show" else eng.config_aplicar()
+        if args.acao == "set":
+            if not args.atribuicoes:
+                ap.error("config set precisa de chave=valor")
+            res = eng.config_set(args.atribuicoes)
+        else:
+            res = eng.config_show() if args.acao == "show" else eng.config_aplicar()
+    elif args.cmd == "dhcp":
+        if args.acao == "clientes":
+            res = eng.dhcp_clientes()
+            if not args.json:
+                for c in res["clientes"]:
+                    print(f"  {c['ip']:<16} {c['mac']}  {c['nome'] or '-'}"
+                          f"{'  (fixo)' if c['fixo'] else ''}")
+                return
+        elif args.acao == "fixar":
+            res = eng.dhcp_fixo_add(args.mac, args.ip, args.nome)
+        else:
+            res = eng.dhcp_fixo_rm(args.mac)
+    elif args.cmd == "redir":
+        res = (eng.fw_redir_add(args.nome, args.proto, args.porta_externa, args.ip,
+                                args.porta_interna)
+               if args.acao == "add" else eng.fw_redir_rm(args.nome))
+    elif args.cmd == "logs":
+        res = eng.logs(args.unidade, args.n)
+        if res["ok"] and not args.json:
+            print(res["texto"])
+            return
     elif args.cmd == "restaurar":
         try:
             with open(args.arquivo) as f:

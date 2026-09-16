@@ -404,6 +404,42 @@ def _aplicar_fuso(fuso):
     return True
 
 
+LEDS_DIR = "/sys/class/leds"
+
+
+def _trigger_atual(led):
+    texto = _ler(f"{LEDS_DIR}/{led}/trigger") or ""
+    ativo = [t for t in texto.split() if t.startswith("[")]
+    return ativo[0].strip("[]") if ativo else None
+
+
+def _aplicar_leds(cfg):
+    """LEDs fora do 'auto' ganham um gatilho do kernel (como no System → LED
+    Configuration do OpenWrt). Os 'auto' ficam com o opendongled, que lê a
+    config e pula os manuais."""
+    mudou = []
+    for led, gatilho in cfg["sistema"]["leds"].items():
+        base = f"{LEDS_DIR}/{led}"
+        if gatilho == "auto" or not os.path.isdir(base):
+            continue
+        trigger, _, dispositivo = gatilho.partition(":")
+        if _trigger_atual(led) == trigger and (
+                not dispositivo or (_ler(f"{base}/device_name") or "").strip() == dispositivo):
+            continue
+        try:
+            with open(f"{base}/trigger", "w") as f:
+                f.write(trigger)
+            if trigger == "netdev":   # arquivos só existem depois do trigger
+                for arquivo, valor in (("device_name", dispositivo), ("link", "1"),
+                                       ("rx", "1"), ("tx", "1")):
+                    with open(f"{base}/{arquivo}", "w") as f:
+                        f.write(valor)
+        except OSError as e:
+            raise RuntimeError(f"LED {led}: gatilho {gatilho} não aceito ({e})")
+        mudou.append(f"led {led}={gatilho}")
+    return mudou
+
+
 def _aplicar_dnsproxy(ligar):
     rc, _, _ = _run(["systemctl", "is-enabled", "dnsproxy"])
     if (rc == 0) == ligar:
@@ -624,6 +660,7 @@ def aplicar(cfg=None):
                             "a configuração anterior foi restaurada."}
         if rede_networkd():
             mudou += _aplicar_rede(cfg)
+        mudou += _aplicar_leds(cfg)
         if _aplicar_hostname(cfg["sistema"]["hostname"]):
             mudou.append("hostname")
         if _aplicar_fuso(cfg["sistema"]["fuso"]):

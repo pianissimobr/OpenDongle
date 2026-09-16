@@ -18,6 +18,7 @@ Autenticação: as ações de mudança exigem login com a senha de admin
 """
 
 import html
+import ipaddress
 import json
 import os
 import secrets
@@ -31,7 +32,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_engine as eng
 import opendongle_diag as diag
 
-IP = "192.168.100.1"
 SESSOES = set()
 # resultado do último diagnóstico de hardware (nome_teste -> {status,
 # detalhe, quando}) — cache em memória, mesmo espírito de SESSOES: não
@@ -168,7 +168,7 @@ def tela_status(extra=""):
         <p>Modo atual: <b>{modo}</b></p>{ssid}
         {extra}
         <p style='margin-top:16px'>Para acessar este painel a qualquer
-        momento, digite <b>opendongle.local</b> (ou {IP}).</p>
+        momento, digite <b>opendongle.local</b> (ou {eng.ip_lan()}).</p>
       </div>
       <div class='card'>
         <h2>📊 Saúde do sistema</h2>
@@ -284,6 +284,13 @@ def tela_config(logado, m=""):
         <a class='btn' href='/audio'><button class='sec'>🎧 Áudio</button></a>
         <a class='btn' href='/diagnostico'><button class='sec'>🩺
         Diagnóstico completo</button></a>
+      </div>
+      <div class='card'>
+        <h2>🌐 Rede e sistema</h2>
+        <a class='btn' href='/rede'><button class='sec'>🌐 LAN e DHCP</button></a>
+        <a class='btn' href='/firewall'><button class='sec'>🧱 Firewall</button></a>
+        <a class='btn' href='/sistema'><button class='sec'>🛠️ Sistema, LEDs e
+        backup</button></a>
       </div>""")
 
 
@@ -491,6 +498,237 @@ def tela_diagnostico(logado):
       </div>""")
 
 
+# ---------- rede, firewall e sistema (equivalente ao LuCI) ----------
+def _e(v):
+    return html.escape(str(v), quote=True)
+
+
+def _voltar(destino="/config"):
+    return (f"<div class='card'><a class='btn' href='{destino}'>"
+            "<button class='sec'>Voltar</button></a></div>")
+
+
+def _resultado(r):
+    """Mensagem de um resultado do engine (aviso em verde, erro em vermelho)."""
+    if r is None:
+        return ""
+    return msg(r.get("aviso", "Aplicado.") if r["ok"] else r["erro"],
+               "ok" if r["ok"] else "er")
+
+
+def _botao_post(acao, campos, rotulo):
+    ocultos = "".join(f"<input type='hidden' name='{_e(k)}' value='{_e(v)}'>"
+                      for k, v in campos.items())
+    return (f"<form method='post' action='{acao}' style='margin:0'>{ocultos}"
+            f"<button class='sec' style='width:auto;margin:0;padding:6px 12px'>"
+            f"{_e(rotulo)}</button></form>")
+
+
+def tela_rede(r=None):
+    cfg = eng.config_show()
+    if not cfg["ok"]:
+        return page(f"<div class='card'>{msg(cfg['erro'], 'er')}</div>" + _voltar())
+    lan = cfg["config"]["lan"]
+    dhcp = lan["dhcp"]
+    clientes = eng.dhcp_clientes()["clientes"]
+    linhas_clientes = "".join(
+        f"<div class='linha'><span>{_e(c['nome'] or '(sem nome)')}<br>"
+        f"<small style='color:var(--mut)'>{_e(c['ip'])} · {_e(c['mac'])}</small></span>"
+        + ("<span class='badge b-ok'>fixo</span>" if c["fixo"] else
+           _botao_post("/fixo-add", {"mac": c["mac"], "ip": c["ip"],
+                                     "nome": c["nome"] or "aparelho"}, "Fixar IP"))
+        + "</div>" for c in clientes) or \
+        "<p>Nenhum aparelho com IP emprestado agora.</p>"
+    linhas_fixos = "".join(
+        f"<div class='linha'><span>{_e(f['nome'])}<br>"
+        f"<small style='color:var(--mut)'>{_e(f['ip'])} · {_e(f['mac'])}</small></span>"
+        + _botao_post("/fixo-rm", {"mac": f["mac"]}, "Remover") + "</div>"
+        for f in dhcp["fixos"]) or "<p>Nenhum IP fixo.</p>"
+    return page(f"""
+      <div class='card'>
+        <h1>🌐 LAN e DHCP</h1>{_resultado(r)}
+      </div>
+      <div class='card'>
+        <h2>Aparelhos conectados</h2>{linhas_clientes}
+      </div>
+      <div class='card'>
+        <h2>IPs fixos</h2>{linhas_fixos}
+        <form method='post' action='/fixo-add'>
+          <label>MAC (ex: AA:BB:CC:DD:EE:FF)</label><input name='mac' required>
+          <label>IP</label><input name='ip' required>
+          <label>Nome (letras, números, - e _)</label><input name='nome' required>
+          <button>Adicionar IP fixo</button>
+        </form>
+      </div>
+      <div class='card'>
+        <h2>Rede local</h2>
+        <form method='post' action='/lan'>
+          <div class='row'>
+            <div><label>IP do dongle</label><input name='ip' value='{_e(lan['ip'])}' required></div>
+            <div><label>Prefixo</label><input name='prefixo' value='{_e(lan['prefixo'])}' required></div>
+          </div>
+          <div class='row'>
+            <div><label>DHCP início</label><input name='inicio' value='{_e(dhcp['inicio'])}' required></div>
+            <div><label>DHCP fim</label><input name='fim' value='{_e(dhcp['fim'])}' required></div>
+          </div>
+          <label>Tempo do empréstimo (ex: 12h)</label>
+          <input name='lease' value='{_e(dhcp['lease'])}' required>
+          <div class='aviso'>Trocar o IP do dongle derruba o acesso atual. Você
+          terá 3 minutos pra reconectar e confirmar no endereço novo; senão ele
+          volta sozinho ao IP anterior.</div>
+          <button>Salvar rede local</button>
+        </form>
+      </div>{_voltar()}""")
+
+
+def tela_firewall(r=None):
+    cfg = eng.config_show()
+    if not cfg["ok"]:
+        return page(f"<div class='card'>{msg(cfg['erro'], 'er')}</div>" + _voltar())
+    fw = cfg["config"]["firewall"]
+
+    def caixa(nome, texto):
+        marcado = " checked" if fw[nome] else ""
+        return (f"<label style='display:flex;gap:10px;align-items:center'>"
+                f"<input type='checkbox' name='{nome}' value='1' style='width:auto'"
+                f"{marcado}>{texto}</label>")
+    redir = "".join(
+        f"<div class='linha'><span>{_e(x['nome'])}<br><small style='color:var(--mut)'>"
+        f"{_e(x['proto'])} {_e(x['porta_externa'])} → {_e(x['ip'])}:{_e(x['porta_interna'])}"
+        f"</small></span>" + _botao_post("/redir-rm", {"nome": x["nome"]}, "Remover")
+        + "</div>" for x in fw["redirecionamentos"]) or "<p>Nenhum redirecionamento.</p>"
+    return page(f"""
+      <div class='card'>
+        <h1>🧱 Firewall</h1>
+        <p>A rede local (USB e hotspot) sempre tem acesso. O 4G fica fechado
+        pra conexões de fora, exceto o que você liberar aqui.</p>{_resultado(r)}
+      </div>
+      <div class='card'>
+        <h2>Acesso ao dongle</h2>
+        <form method='post' action='/fw-set'>
+          {caixa('wifi_cliente_confiavel', 'Confiar na rede Wi-Fi em que o dongle é cliente')}
+          {caixa('ssh_pela_wan', 'Liberar SSH (porta 22) pelo 4G')}
+          {caixa('painel_pela_wan', 'Liberar este painel (porta 80) pelo 4G')}
+          <button>Salvar acesso</button>
+        </form>
+      </div>
+      <div class='card'>
+        <h2>Redirecionamento de portas</h2>{redir}
+        <form method='post' action='/redir-add'>
+          <label>Nome</label><input name='nome' required>
+          <div class='row'>
+            <div><label>Protocolo</label><select name='proto'>
+              <option>tcp</option><option>udp</option></select></div>
+            <div><label>Porta externa</label><input name='porta_externa' required></div>
+          </div>
+          <div class='row'>
+            <div><label>IP do aparelho</label><input name='ip' required></div>
+            <div><label>Porta interna</label><input name='porta_interna' required></div>
+          </div>
+          <div class='aviso'>No 4G a operadora costuma usar CGNAT: portas
+          redirecionadas só funcionam de fora com IP público.</div>
+          <button>Adicionar redirecionamento</button>
+        </form>
+      </div>{_voltar()}""")
+
+
+GATILHOS_LED = [("auto", "Automático (OpenDongle)"), ("none", "Apagado"),
+                ("default-on", "Aceso"), ("heartbeat", "Batimento"),
+                ("activity", "Atividade da CPU"),
+                ("netdev:wlan0", "Tráfego do Wi-Fi"), ("netdev:wwan0", "Tráfego do 4G"),
+                ("netdev:usb0", "Tráfego da USB")]
+
+
+def tela_sistema(r=None):
+    cfg = eng.config_show()
+    if not cfg["ok"]:
+        return page(f"<div class='card'>{msg(cfg['erro'], 'er')}"
+                    f"{_form_restaurar()}</div>" + _voltar())
+    s = cfg["config"]["sistema"]
+    leds = "".join(
+        f"<form method='post' action='/led'><input type='hidden' name='led' value='{_e(led)}'>"
+        f"<label>{_e(led)}</label><div class='row'><select name='gatilho'>"
+        + "".join(f"<option value='{_e(v)}'{' selected' if v == atual else ''}>{_e(t)}</option>"
+                  for v, t in GATILHOS_LED)
+        + "</select><button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>"
+          "Aplicar</button></div></form>"
+        for led, atual in s["leds"].items())
+    return page(f"""
+      <div class='card'>
+        <h1>🛠️ Sistema</h1>{_resultado(r)}
+        <form method='post' action='/sistema'>
+          <label>Hostname (o painel fica em hostname.local)</label>
+          <input name='hostname' value='{_e(s['hostname'])}' required>
+          <label>Fuso horário (ex: America/Sao_Paulo)</label>
+          <input name='fuso' value='{_e(s['fuso'])}' required>
+          <button>Salvar</button>
+        </form>
+      </div>
+      <div class='card'><h2>💡 LEDs</h2>{leds}</div>
+      <div class='card'>
+        <h2>📜 Logs</h2>
+        <a class='btn' href='/logs'><button class='sec'>Ver logs do sistema</button></a>
+      </div>
+      <div class='card'>
+        <h2>💾 Backup</h2>
+        <a class='btn' href='/backup.json'><button class='sec'>Baixar backup da
+        configuração</button></a>
+        <div class='aviso'>O backup contém as senhas do Wi-Fi.</div>
+        {_form_restaurar()}
+      </div>
+      <div class='card'>
+        <h2>♻️ Reset de fábrica</h2>
+        <form method='post' action='/reset'>
+          <label>Digite RESET pra confirmar</label>
+          <input name='confirmacao' autocomplete='off' required>
+          <div class='aviso'>Volta a config ao padrão: Wi-Fi OpenDongle /
+          opendongle, IPs fixos, redirecionamentos e LEDs apagados.</div>
+          <button>Voltar à configuração de fábrica</button>
+        </form>
+      </div>{_voltar()}""")
+
+
+def _form_restaurar():
+    return """
+        <form method='post' action='/restaurar'>
+          <label>Restaurar: cole o conteúdo do backup</label>
+          <textarea name='backup' rows='5' required style='width:100%;padding:12px;
+           border-radius:10px;border:1px solid var(--br);background:var(--in);
+           color:var(--tx);font-family:monospace'></textarea>
+          <button class='sec'>Restaurar backup</button>
+        </form>"""
+
+
+def tela_logs(unidade=""):
+    r = eng.logs(unidade)
+    opcoes = "".join(f"<option value='{_e(u)}'{' selected' if u == unidade else ''}>"
+                     f"{_e(u or 'tudo')}</option>" for u in eng.UNITS_LOG)
+    corpo = (f"<pre style='white-space:pre-wrap;font-size:.7em;color:var(--mut);"
+             f"max-height:70vh;overflow:auto'>{_e(r['texto'])}</pre>"
+             if r["ok"] else msg(r["erro"], "er"))
+    return page(f"""
+      <div class='card'>
+        <h1>📜 Logs</h1>
+        <form method='get' action='/logs'><div class='row'>
+          <select name='u'>{opcoes}</select>
+          <button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>Ver</button>
+        </div></form>
+        {corpo}
+      </div>{_voltar('/sistema')}""")
+
+
+def tela_confirmar(r=None):
+    return page(f"""
+      <div class='card'>
+        <h1>✅ Confirmar mudança de rede</h1>
+        <p>Se você está vendo esta página, o dongle está acessível no endereço
+        novo. Confirme pra manter a mudança; sem confirmação ela é desfeita
+        sozinha em até 3 minutos.</p>{_resultado(r)}
+        <form method='post' action='/rede-confirmar'><button>Manter a nova
+        configuração</button></form>
+      </div>""")
+
+
 # ---------- servidor ----------
 class Painel(BaseHTTPRequestHandler):
     def _send(self, corpo, code=200, extra=None):
@@ -521,11 +759,15 @@ class Painel(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        ip = eng.ip_lan()
         if path in DETECCAO:                     # portal cativo
-            return self._redir(f"http://{IP}/")
-        host = self.headers.get("Host", "").split(":")[0]
-        if host not in (IP, "opendongle.local", "opendongle"):
-            return self._redir(f"http://{IP}/")
+            return self._redir(f"http://{ip}/")
+        host = self.headers.get("Host", "").split(":")[0].strip("[]")
+        # nome de domínio qualquer = DNS sequestrado pelo portal cativo;
+        # IP literal é acesso direto (inclusive pelo IP do dongle na rede
+        # de casa, no modo cliente) e não pode ser mandado pra LAN USB
+        if host not in ("opendongle.local", "opendongle") and not _eh_ip(host):
+            return self._redir(f"http://{ip}/")
         if path == "/" :
             return self._send(tela_escolha())
         if path == "/status":
@@ -542,7 +784,33 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_audio(self._logado()))
         if path == "/diagnostico":
             return self._send(tela_diagnostico(self._logado()))
+        if path == "/confirmar":
+            return self._send(tela_confirmar())
+        protegidas = {"/rede": tela_rede, "/firewall": tela_firewall,
+                      "/sistema": tela_sistema}
+        if path in protegidas or path in ("/logs", "/backup.json"):
+            if not self._logado():
+                return self._send(tela_config(False))
+            if path == "/logs":
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return self._send(tela_logs(q.get("u", [""])[0]))
+            if path == "/backup.json":
+                return self._enviar_backup()
+            return self._send(protegidas[path]())
         return self._redir("/")
+
+    def _enviar_backup(self):
+        r = eng.backup()
+        if not r["ok"]:
+            return self._send(tela_sistema(r))
+        corpo = r["backup"].encode()
+        nome = f"opendongle-backup-{time.strftime('%Y%m%d-%H%M')}.json"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f"attachment; filename={nome}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(corpo)
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
@@ -555,7 +823,7 @@ class Painel(BaseHTTPRequestHandler):
             if _checa_admin(f.get("senha", "")):
                 tok = secrets.token_urlsafe(24)
                 SESSOES.add(tok)
-                return self._redir("/config", f"s={tok}; Path=/; HttpOnly")
+                return self._redir("/config", f"s={tok}; Path=/; HttpOnly; SameSite=Strict")
             return self._send(tela_config(False, "Senha incorreta."))
         if path == "/wifi":
             # aceita o SSID digitado manualmente OU o escolhido na lista
@@ -567,9 +835,46 @@ class Painel(BaseHTTPRequestHandler):
                 return self._send(tela_status(
                     msg("Conectado! " + r.get("aviso", ""))))
             return self._send(tela_wifi(r["erro"]))
+        if path == "/rede-confirmar":
+            # sem login de propósito: depois de trocar o IP da LAN o cookie
+            # da sessão ficou no endereço antigo. Só cancela a reversão de uma
+            # mudança que um admin já fez — não altera nada por conta própria.
+            return self._send(tela_confirmar(eng.executar("rede-confirmar", {})))
         # daqui: ações protegidas
         if not self._logado():
             return self._redir("/config")
+        if path == "/lan":
+            return self._send(tela_rede(eng.lan_set(
+                f.get("ip"), f.get("prefixo"), f.get("inicio"), f.get("fim"),
+                f.get("lease"))))
+        if path == "/fixo-add":
+            return self._send(tela_rede(eng.dhcp_fixo_add(
+                f.get("mac"), f.get("ip"), f.get("nome"))))
+        if path == "/fixo-rm":
+            return self._send(tela_rede(eng.dhcp_fixo_rm(f.get("mac"))))
+        if path == "/fw-set":
+            return self._send(tela_firewall(eng.fw_set(
+                f.get("wifi_cliente_confiavel") == "1", f.get("ssh_pela_wan") == "1",
+                f.get("painel_pela_wan") == "1")))
+        if path == "/redir-add":
+            return self._send(tela_firewall(eng.fw_redir_add(
+                f.get("nome"), f.get("proto"), f.get("porta_externa"), f.get("ip"),
+                f.get("porta_interna"))))
+        if path == "/redir-rm":
+            return self._send(tela_firewall(eng.fw_redir_rm(f.get("nome", ""))))
+        if path == "/sistema":
+            return self._send(tela_sistema(eng.sistema_set(
+                f.get("hostname"), f.get("fuso"))))
+        if path == "/led":
+            return self._send(tela_sistema(eng.led_set(
+                f.get("led", ""), f.get("gatilho", ""))))
+        if path == "/restaurar":
+            return self._send(tela_sistema(eng.restaurar(f.get("backup", ""))))
+        if path == "/reset":
+            if f.get("confirmacao", "").strip() != "RESET":
+                return self._send(tela_sistema(
+                    {"ok": False, "erro": "Digite RESET (maiúsculas) pra confirmar."}))
+            return self._send(tela_sistema(eng.reset()))
         if path == "/set-hotspot":
             r = eng.set_hotspot(f.get("ssid"), f.get("senha"))
             return self._send(tela_config(True,
@@ -632,6 +937,14 @@ class Painel(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+def _eh_ip(host):
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
 def _hash_shadow(usuario):

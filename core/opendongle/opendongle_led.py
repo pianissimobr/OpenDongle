@@ -42,6 +42,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_config as conf
 import opendongle_engine as eng
 
 ROLE_SW = "/sys/class/usb_role/ci_hdrc.0-role-switch/role"
@@ -69,10 +70,14 @@ class Led:
     estado pedido muda — evita reescrever à toa a cada ciclo."""
 
     def __init__(self, nome_sysfs):
+        self.nome = nome_sysfs
         self.dir = os.path.join(LED_DIR, nome_sysfs)
         self._ultimo = None
 
     def _write(self, arquivo, valor):
+        # LED com gatilho manual na config (System → LED): não é nosso
+        if self.nome in _MANUAIS["leds"]:
+            return
         try:
             with open(os.path.join(self.dir, arquivo), "w") as f:
                 f.write(str(valor))
@@ -110,9 +115,31 @@ class Led:
         self._ultimo = None   # próxima chamada de on()/off()/blink() força reescrita
 
 
+_MANUAIS = {"mtime": None, "leds": set()}
+
 LED_RED = Led("red:power")
 LED_GREEN = Led("green:wlan")
 LED_BLUE = Led("blue:wan")
+
+
+def atualizar_manuais():
+    """Relê da config quais LEDs têm gatilho manual (só quando o arquivo
+    muda). LED que volta pro 'auto' tem o estado esquecido, pra ser
+    reescrito no próximo ciclo por cima do gatilho do kernel."""
+    try:
+        mtime = os.stat(conf.CONFIG).st_mtime
+    except OSError:
+        mtime = None
+    if mtime == _MANUAIS["mtime"]:
+        return
+    try:
+        leds = {n for n, g in conf.carregar()["sistema"]["leds"].items() if g != "auto"}
+    except (ValueError, OSError, KeyError):
+        leds = set()
+    for led in (LED_RED, LED_GREEN, LED_BLUE):
+        if led.nome in _MANUAIS["leds"] and led.nome not in leds:
+            led._ultimo = None
+    _MANUAIS.update(mtime=mtime, leds=leds)
 
 
 def todos_apagados():
@@ -230,6 +257,7 @@ def aplicar_estado(efeito_audio):
     """Aplica o estado 'grande' (USB/Wi-Fi/internet) e devolve qual LED é
     candidato a ganhar o efeito de áudio agora (None se nenhum — erro,
     device, ou um LED já piscando aviso não aceitam o efeito)."""
+    atualizar_manuais()
     papel = papel_usb()
 
     if erro_pendente() or papel is None:

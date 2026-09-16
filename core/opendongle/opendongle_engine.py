@@ -18,6 +18,7 @@ Sem dependências externas: só stdlib + nmcli (já presente no Debian
 do OpenStick). Retorna dicionários — a casca decide como exibir.
 """
 
+import copy
 import glob
 import json
 import os
@@ -214,6 +215,192 @@ def reset():
         r["aviso"] = ("Configuração de fábrica aplicada. Wi-Fi: "
                       f"{SSID_PADRAO} / {SENHA_PADRAO}.")
     return r
+
+
+def _mudar_e_aplicar(mudanca, aviso="Aplicado."):
+    """Muda a config, valida, salva e aplica. Se o IP/prefixo da LAN mudar
+    (o acesso atual cai), agenda a reversão automática. Se a aplicação
+    falhar, volta a config anterior."""
+    try:
+        cfg = conf.carregar()
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+    anterior = copy.deepcopy(cfg)
+    try:
+        mudanca(cfg)
+    except (ValueError, KeyError, TypeError) as e:
+        if "invalid literal" in str(e) or "int() argument" in str(e):
+            return {"ok": False, "erro": "Preencha os campos numéricos só com números."}
+        return {"ok": False, "erro": str(e.args[0]) if e.args else str(e)}
+    erros = conf.validar(cfg)
+    if erros:
+        return {"ok": False, "erro": "; ".join(erros)}
+    lan_mudou = (cfg["lan"]["ip"], cfg["lan"]["prefixo"]) != \
+                (anterior["lan"]["ip"], anterior["lan"]["prefixo"])
+    if lan_mudou and not aplic.rede_networkd():
+        return {"ok": False, "erro": "Trocar o IP da LAN exige a rede migrada "
+                "pro systemd-networkd ('opendongle rede migrar')."}
+    conf.salvar(cfg)
+    if lan_mudou:
+        aplic.agendar_reversao({"tipo": "config", "config": anterior})
+    r = aplic.aplicar(cfg)
+    if not r["ok"]:
+        conf.salvar(anterior)
+        aplic.aplicar(anterior)
+        if lan_mudou:
+            aplic.confirmar()
+        r["erro"] += " (configuração anterior restaurada)"
+        return r
+    r["aviso"] = aviso
+    if lan_mudou:
+        r["confirmar_em"] = cfg["lan"]["ip"]
+        r["aviso"] = (f"IP da LAN agora é {cfg['lan']['ip']}. Reconecte e abra "
+                      f"http://{cfg['lan']['ip']}/confirmar em até "
+                      f"{aplic.PRAZO_REVERSAO // 60} min, senão volta sozinho.")
+    return r
+
+
+def _valor_config(texto):
+    """'true'/'12'/'"x"'/'[..]' viram JSON; o resto é string literal."""
+    try:
+        return json.loads(texto)
+    except ValueError:
+        return texto
+
+
+def config_set(atribuicoes):
+    """Equivalente ao 'uci set': ['lan.dhcp.inicio=20', 'dns.criptografado=true']."""
+    def mudanca(cfg):
+        for item in atribuicoes:
+            if "=" not in item:
+                raise ValueError(f"Use chave=valor: {item}")
+            chave, valor = item.split("=", 1)
+            partes = chave.strip().split(".")
+            alvo = cfg
+            for p in partes[:-1]:
+                alvo = alvo[p]
+            if partes[-1] not in alvo:
+                raise KeyError(f"Chave inexistente: {chave}")
+            alvo[partes[-1]] = _valor_config(valor)
+    return _mudar_e_aplicar(mudanca)
+
+
+# --------------------------------------------------------------- LAN / DHCP
+LEASES = "/var/lib/misc/dnsmasq.leases"
+
+
+def dhcp_clientes():
+    """Dispositivos com IP emprestado pelo dnsmasq agora (formato do arquivo:
+    expira mac ip nome client-id)."""
+    fixos = {}
+    try:
+        fixos = {f["mac"]: f for f in conf.carregar()["lan"]["dhcp"]["fixos"]}
+    except (ValueError, OSError):
+        pass
+    clientes = []
+    try:
+        with open(LEASES) as f:
+            for linha in f:
+                p = linha.split()
+                if len(p) >= 4 and ":" in p[1] and "." in p[2]:
+                    mac = p[1].upper()
+                    clientes.append({"mac": mac, "ip": p[2],
+                                     "nome": "" if p[3] == "*" else p[3],
+                                     "expira": int(p[0]), "fixo": mac in fixos})
+    except (OSError, ValueError):
+        pass
+    return {"ok": True, "clientes": sorted(clientes, key=lambda c: c["ip"])}
+
+
+def lan_set(ip, prefixo, inicio, fim, lease):
+    def mudanca(cfg):
+        cfg["lan"].update(ip=(ip or "").strip(), prefixo=int(prefixo))
+        cfg["lan"]["dhcp"].update(inicio=int(inicio), fim=int(fim),
+                                  lease=(lease or "").strip())
+    return _mudar_e_aplicar(mudanca, "LAN e DHCP aplicados.")
+
+
+def dhcp_fixo_add(mac, ip, nome):
+    mac = (mac or "").strip().upper()
+
+    def mudanca(cfg):
+        fixos = [f for f in cfg["lan"]["dhcp"]["fixos"] if f["mac"] != mac]
+        fixos.append({"mac": mac, "ip": (ip or "").strip(), "nome": (nome or "").strip()})
+        cfg["lan"]["dhcp"]["fixos"] = fixos
+    return _mudar_e_aplicar(mudanca, f"IP fixo salvo. O aparelho recebe o IP "
+                            "novo quando renovar a conexão.")
+
+
+def dhcp_fixo_rm(mac):
+    mac = (mac or "").strip().upper()
+    return _mudar_e_aplicar(
+        lambda cfg: cfg["lan"]["dhcp"].update(
+            fixos=[f for f in cfg["lan"]["dhcp"]["fixos"] if f["mac"] != mac]),
+        "IP fixo removido.")
+
+
+# --------------------------------------------------------------- FIREWALL
+def fw_redir_add(nome, proto, porta_externa, ip, porta_interna):
+    nome = (nome or "").strip()
+
+    def mudanca(cfg):
+        redir = [r for r in cfg["firewall"]["redirecionamentos"] if r["nome"] != nome]
+        redir.append({"nome": nome, "proto": (proto or "").strip(),
+                      "porta_externa": int(porta_externa), "ip": (ip or "").strip(),
+                      "porta_interna": int(porta_interna)})
+        cfg["firewall"]["redirecionamentos"] = redir
+    return _mudar_e_aplicar(mudanca, f"Redirecionamento '{nome}' aplicado.")
+
+
+def fw_redir_rm(nome):
+    return _mudar_e_aplicar(
+        lambda cfg: cfg["firewall"].update(redirecionamentos=[
+            r for r in cfg["firewall"]["redirecionamentos"] if r["nome"] != nome]),
+        "Redirecionamento removido.")
+
+
+def fw_set(wifi_cliente_confiavel, ssh_pela_wan, painel_pela_wan):
+    return _mudar_e_aplicar(
+        lambda cfg: cfg["firewall"].update(
+            wifi_cliente_confiavel=bool(wifi_cliente_confiavel),
+            ssh_pela_wan=bool(ssh_pela_wan), painel_pela_wan=bool(painel_pela_wan)),
+        "Regras de acesso aplicadas.")
+
+
+# --------------------------------------------------------------- SISTEMA
+UNITS_LOG = {"": None, "opendongle": "opendongle.service",
+             "dnsmasq": "dnsmasq.service", "hostapd": "hostapd@wlan0.service",
+             "wifi-cliente": "wpa_supplicant@wlan0.service",
+             "rede": "systemd-networkd.service",
+             "usb-4g": "usb-role-autosense.service"}
+
+
+def sistema_set(hostname, fuso):
+    return _mudar_e_aplicar(
+        lambda cfg: cfg["sistema"].update(hostname=(hostname or "").strip(),
+                                          fuso=(fuso or "").strip()),
+        "Hostname e fuso aplicados.")
+
+
+def led_set(led, gatilho):
+    def mudanca(cfg):
+        if led not in cfg["sistema"]["leds"]:
+            raise ValueError(f"LED desconhecido: {led}")
+        cfg["sistema"]["leds"][led] = gatilho
+    return _mudar_e_aplicar(mudanca, "LED aplicado.")
+
+
+def logs(unidade="", linhas=200):
+    if unidade not in UNITS_LOG:
+        return {"ok": False, "erro": "Serviço de log desconhecido."}
+    cmd = ["journalctl", "-b", "--no-pager", "-o", "short-iso",
+           "-n", str(max(1, min(int(linhas), 1000)))]
+    if UNITS_LOG[unidade]:
+        cmd += ["-u", UNITS_LOG[unidade]]
+    rc, out, err = _run(cmd, timeout=20)
+    if rc != 0:
+        return {"ok": False, "erro": err[:200]}
+    return {"ok": True, "texto": out}
 
 
 # --------------------------------------------------------------- HOTSPOT
