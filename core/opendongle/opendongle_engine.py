@@ -571,6 +571,25 @@ def remoto_set(ligar, lan=False, saida=False):
     return r
 
 
+def audio_bt_set(ligar):
+    import opendongle_audio as audio
+    if ligar and not audio.bt_instalado():
+        err = _apt_instalar(audio.PACOTES_BT)
+        if err:
+            return {"ok": False, "erro": err}
+    return _mudar_e_aplicar(lambda cfg: cfg["audio"].update(bluetooth=bool(ligar)),
+                            "Áudio Bluetooth ligado." if ligar else "Áudio Bluetooth desligado.")
+
+
+def audio_placa_padrao(placa_id):
+    import opendongle_audio as audio
+    placa_id = (placa_id or "").strip()
+    if placa_id and not audio._placa_por_id(placa_id):
+        return {"ok": False, "erro": "Placa de som não encontrada."}
+    return _mudar_e_aplicar(lambda cfg: cfg["audio"].update(placa=placa_id),
+                            "Placa padrão definida." if placa_id else "Placa padrão: automática.")
+
+
 def remoto_logout():
     rc, _, err = _run(["tailscale", "logout"], timeout=30)
     if rc != 0:

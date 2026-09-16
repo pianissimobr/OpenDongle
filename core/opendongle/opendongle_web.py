@@ -35,10 +35,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_config as conf
+import opendongle_audio as aud
 import opendongle_bluetooth as bt
 import opendongle_engine as eng
 import opendongle_sistema as sis
-import opendongle_diag as diag
 
 # O painel dorme quando ocioso (processo encerra): nada de estado só em
 # memória. Sessão = cookie assinado; diagnóstico = arquivo em /run (tmpfs).
@@ -209,7 +209,7 @@ ROTAS_CATEGORIA = {
 }
 _PREFIXOS_CATEGORIA = (("/bt-", "dispositivos"), ("/modem-", "internet"),
                        ("/fixo-", "internet"), ("/redir-", "internet"),
-                       ("/remoto-", "internet"))
+                       ("/remoto-", "internet"), ("/audio-", "audio"))
 
 
 def categoria_da_rota(path):
@@ -1021,34 +1021,91 @@ def tela_modem(logado, m="", erro=False):
       {acoes}""")
 
 
-def tela_audio(logado, m="", erro=False):
-    cache = ULTIMO_DIAG.get("áudio (loopback)")
-    if cache:
-        cls = {"ok": "b-ok", "falha": "b-er",
-               "nao_testavel": "b-av"}.get(cache["status"], "b-av")
-        quando = time.strftime("%d/%m %H:%M", time.localtime(cache["quando"]))
-        resultado = f"""
-        <span class='badge {cls}'>{html.escape(cache['status'])}</span>
-        <p>{html.escape(cache['detalhe'])}</p>
-        <p style='color:var(--mut);font-size:.85em'>Testado às {quando}</p>"""
+def _form_audio(acao, rotulo, campos, classe="sec"):
+    ocultos = "".join(f"<input type='hidden' name='{_e(k)}' value='{_e(v)}'>" for k, v in campos.items())
+    return (f"<form method='post' action='{acao}' style='margin:0'>{ocultos}"
+            f"<button class='{classe}' style='width:auto;margin:0;padding:6px 12px'>{_e(rotulo)}</button></form>")
+
+
+def _controle_volume(acao, campos, nome, volume, mudo, maximo=100):
+    """Slider que envia sozinho ao soltar, mais o botão de mudo."""
+    ocultos = "".join(f"<input type='hidden' name='{_e(k)}' value='{_e(v)}'>" for k, v in campos.items())
+    return (f"<div class='item'><span class='ic'>{'🔇' if mudo else '🔊'}</span><span class='tx'>{_e(nome)}"
+            f"<form method='post' action='{acao}' style='margin:6px 0 0'>{ocultos}"
+            f"<input type='range' name='volume' min='0' max='{maximo}' value='{volume or 0}' "
+            f"style='padding:0' onchange='this.form.submit()'>"
+            f"<small>{volume if volume is not None else '—'}%</small></form></span>"
+            f"<span class='acoes'>{_form_audio(acao, 'Ativar som' if mudo else 'Mudo', dict(campos, mudo='0' if mudo else '1'))}"
+            f"</span></div>")
+
+
+def tela_audio(logado, r=None):
+    if not logado:
+        n = len(aud.placas()["placas"])
+        return page(f"""
+      <div class='card'><h1>🎧 Áudio</h1>
+        {item("🎧", "Placas de som", f"{n} conectada(s)")}
+        <p>Entre com a senha de administração pra ajustar o som.</p>
+        <a class='btn' href='/config'><button>Entrar</button></a>
+      </div>""", "Áudio")
+    info = aud.placas()
+    placas_html = ""
+    for p in info["placas"]:
+        padrao = p["id"] == info["padrao"]
+        controles = "".join(
+            _controle_volume("/audio-ajustar", {"placa": p["id"], "controle": c["nome"]},
+                             f"{c['nome']} ({c['tipo']})", c["volume"], c["mudo"])
+            for c in p["controles"]) or "<p>Esta placa não tem controle de volume.</p>"
+        tem_entrada = any(c["tipo"] == "entrada" for c in p["controles"])
+        placas_html += f"""
+      <div class='card'><h2>{'🔌 ' if p['usb'] else ''}{_e(p['nome'])}</h2>
+        <p style='font-size:.85em;margin:0'>{'Placa padrão' if padrao else 'Não é a padrão'} · id {_e(p['id'])}</p>
+        {controles}
+        <div class='acoes' style='margin-top:10px;justify-content:flex-start'>
+          {_form_audio("/audio-testar", "Tocar som de teste", {"placa": p["id"], "tipo": "saida"})}
+          {_form_audio("/audio-testar", "Testar microfone (3 s)", {"placa": p["id"], "tipo": "entrada"}) if tem_entrada else ""}
+          {"" if padrao else _form_audio("/audio-padrao", "Usar como padrão", {"placa": p["id"]})}
+        </div>
+      </div>"""
+    if not info["placas"]:
+        placas_html = """
+      <div class='card'><h2>Placas de som</h2>
+        <p>Nenhuma placa de som conectada. Este dongle não tem som próprio: plugue uma placa
+        de som USB (modo periférico da porta USB) ou use áudio Bluetooth abaixo.</p>
+      </div>"""
+    try:
+        bt_ligado = conf.carregar()["audio"]["bluetooth"]
+    except (ValueError, OSError):
+        bt_ligado = False
+    if bt_ligado and aud.bt_ativo():
+        ap = aud.bt_aparelhos()
+        def linha_bt(x, tipo):
+            return (_controle_volume("/audio-bt-ajustar", {"no": x["id"]},
+                                     f"{x['nome']}{' · padrão' if x['padrao'] else ''}", x["volume"], x["mudo"], 150)
+                    + "<div class='acoes' style='justify-content:flex-start;margin:0 0 8px 40px'>"
+                    + _form_audio("/audio-bt-testar", "Tocar som de teste" if tipo == "saida" else "Testar microfone",
+                                  {"no": x["id"], "tipo": tipo})
+                    + ("" if x["padrao"] else _form_audio("/audio-bt-ajustar", "Usar como padrão",
+                                                          {"no": x["id"], "padrao": "1"}))
+                    + "</div>")
+        lista_bt = ("".join(linha_bt(x, "saida") for x in ap["saidas"])
+                    + "".join(linha_bt(x, "entrada") for x in ap["entradas"])) \
+            or "<p>Nenhum fone ou caixa conectado. Pareie e conecte em Dispositivos › Bluetooth.</p>"
+        corpo_bt = f"""{lista_bt}
+        {_form_audio("/audio-bt", "Desligar áudio Bluetooth", {"ligar": "0"})}"""
+    elif bt_ligado:
+        corpo_bt = f"""{msg("Áudio Bluetooth ligado na configuração, mas o PipeWire não está rodando.", "er")}
+        {_form_audio("/audio-bt", "Tentar ligar de novo", {"ligar": "1"}, "")}"""
     else:
-        resultado = "<p style='color:var(--mut)'>Ainda não testado.</p>"
-
-    acao = ("<div class='card'><form method='post' action='/audio-test'>"
-            "<button class='sec'>Testar áudio agora</button></form></div>"
-            if logado else "")
-
+        corpo_bt = f"""<p>Pra usar fone, caixa de som ou microfone Bluetooth. Liga o PipeWire, que fica
+        rodando enquanto estiver ativo (~15 MB de RAM).{"" if aud.bt_instalado() else
+        " Na primeira vez o dongle baixa ~50 MB de pacotes: precisa de internet."}</p>
+        <form method='post' action='/audio-bt'><input type='hidden' name='ligar' value='1'>
+        <button>Ligar áudio Bluetooth</button></form>"""
     return page(f"""
-      <div class='card'>
-        <h1>🎧 Áudio</h1>
-        <p style='color:var(--mut)'>Esse dongle não tem placa de som fixa
-        nem mixer — áudio só existe quando algo está em uso (fone/mic
-        USB, ou este teste de loopback). Por isso não tem
-        "configurações" de verdade, só um teste.</p>
-        {resultado}
-        {msg(m, 'er' if erro else 'ok')}
-      </div>
-      {acao}""")
+      <div class='card'><h1>🎧 Áudio</h1>{_resultado(r)}</div>{_cartao_tarefa("audio-bt", r)}
+      {placas_html}
+      <div class='card'><h2>🔵 Áudio Bluetooth</h2>{corpo_bt}</div>""", "Áudio")
 
 
 def tela_diagnostico(logado):
@@ -1304,6 +1361,24 @@ def tela_logs(unidade=""):
       </div>{_voltar('/sistema')}""")
 
 
+def _cartao_tarefa(nome, r=None):
+    """Andamento de uma instalação em segundo plano (Tor, Tailscale, PipeWire).
+    O resultado final só aparece se não houver ação mais nova na tela (r)."""
+    est = sis.tarefa_estado(nome)
+    if not est:
+        return ""
+    if est["etapa"] == "rodando":
+        minutos = int((time.time() - est["quando"]) // 60)
+        return ("<meta http-equiv='refresh' content='5'><div class='card'><h2>⏳ Instalando…</h2>"
+                f"<p>{_e(est['titulo'])}: baixando e instalando pacotes"
+                f"{f' (há {minutos} min)' if minutos else ''}. Esta página atualiza sozinha.</p></div>")
+    if r is not None or time.time() - est["quando"] > 300:
+        return ""   # há resultado mais novo, ou é antigo: não fica aparecendo
+    if est["etapa"] == "ok":
+        return f"<div class='card'>{msg(est.get('aviso') or 'Instalado e ligado.')}</div>"
+    return f"<div class='card'>{msg(est.get('erro') or 'A instalação falhou.', 'er')}</div>"
+
+
 def tela_tor(r=None):
     st = eng.tor_status()
     if not st["ativo"]:
@@ -1325,7 +1400,7 @@ def tela_tor(r=None):
     return page(f"""
       <div class='card'>
         <h1>🧅 Navegação via Tor</h1>
-        {estado}{_resultado(r)}
+        {estado}{_resultado(r)}{_cartao_tarefa("tor", r)}
         <p>Ligado, tudo que os aparelhos conectados ao dongle (hotspot e USB)
         acessam passa pela rede Tor, sem configurar nada neles. O DNS também.</p>
         <div class='aviso'>Enquanto estiver ligado: a navegação fica mais lenta;
@@ -1387,7 +1462,7 @@ def tela_remoto(r=None):
     return page(f"""
       <div class='card'>
         <h1>🔗 Acesso remoto</h1>
-        {estado}{_resultado(r)}
+        {estado}{_resultado(r)}{_cartao_tarefa("remoto", r)}
         <p>Com o Tailscale, você acessa este dongle de qualquer lugar, sem abrir
         portas no roteador nem precisar de IP público (funciona até no 4G).</p>
         <form method='post' action='/remoto'>
@@ -1589,8 +1664,13 @@ class Painel(BaseHTTPRequestHandler):
         if path == "/restaurar":
             return self._send(tela_sistema(eng.restaurar(f.get("backup", ""))))
         if path == "/tor":
+            if f.get("ligar") == "1" and not os.path.exists("/usr/bin/tor"):
+                return self._send(tela_tor(sis.tarefa_iniciar("tor")))
             return self._send(tela_tor(eng.tor_set(f.get("ligar") == "1")))
         if path == "/remoto":
+            if f.get("ligar") == "1" and not os.path.exists("/usr/sbin/tailscaled"):
+                return self._send(tela_remoto(sis.tarefa_iniciar(
+                    "remoto", lan=f.get("lan") == "1", saida=f.get("saida") == "1")))
             return self._send(tela_remoto(eng.remoto_set(
                 f.get("ligar") == "1", f.get("lan") == "1", f.get("saida") == "1")))
         if path == "/remoto-login":
@@ -1666,11 +1746,28 @@ class Painel(BaseHTTPRequestHandler):
             r = eng.modem_set_apn(f.get("mcc_mnc", ""), f.get("apn", ""))
             return self._send(tela_modem(True,
                 m=(r.get("aviso") if r["ok"] else r["erro"]), erro=not r["ok"]))
-        if path == "/audio-test":
-            status_teste, detalhe = diag.teste_audio()
-            ULTIMO_DIAG["áudio (loopback)"] = {
-                "status": status_teste, "detalhe": detalhe, "quando": time.time()}
-            return self._send(tela_audio(True))
+        if path == "/audio-ajustar":
+            mudo = {"1": True, "0": False}.get(f.get("mudo"))
+            return self._send(tela_audio(True, aud.ajustar(
+                f.get("placa"), f.get("controle"),
+                None if mudo is not None else f.get("volume"), mudo)))
+        if path == "/audio-testar":
+            teste = aud.testar_entrada if f.get("tipo") == "entrada" else aud.testar_saida
+            return self._send(tela_audio(True, teste(f.get("placa"))))
+        if path == "/audio-padrao":
+            return self._send(tela_audio(True, eng.audio_placa_padrao(f.get("placa"))))
+        if path == "/audio-bt":
+            if f.get("ligar") == "1" and not aud.bt_instalado():
+                return self._send(tela_audio(True, sis.tarefa_iniciar("audio-bt")))
+            return self._send(tela_audio(True, eng.audio_bt_set(f.get("ligar") == "1")))
+        if path == "/audio-bt-ajustar":
+            mudo = {"1": True, "0": False}.get(f.get("mudo"))
+            return self._send(tela_audio(True, aud.bt_ajustar(
+                f.get("no"), None if mudo is not None or f.get("padrao") else f.get("volume"),
+                mudo, f.get("padrao") == "1")))
+        if path == "/audio-bt-testar":
+            teste = aud.bt_testar_entrada if f.get("tipo") == "entrada" else aud.bt_testar_saida
+            return self._send(tela_audio(True, teste(f.get("no"))))
         if path == "/diagnostico":
             # roda como PROCESSO SEPARADO, não import in-process: o
             # teste de modem usa signal.alarm() como watchdog, que só

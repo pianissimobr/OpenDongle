@@ -107,6 +107,8 @@ sudo opendongle atualizacoes verificar|instalar     # roda em segundo plano
 sudo opendongle reiniciar|desligar
 sudo opendongle bluetooth status|buscar|parear MAC  # parear com PIN/código: responder sim|PIN
 sudo opendongle usb [host|device]                   # aparelhos USB e papel da porta
+sudo opendongle audio                               # placas de som (volume, mudo, padrao, testar)
+sudo opendongle audio bluetooth on|off              # PipeWire sob demanda pra fone/caixa Bluetooth
 sudo opendongle tor on|off|status                   # navegação da LAN pela rede Tor (instala na 1ª vez)
 sudo opendongle remoto on [--lan] [--saida]         # acesso remoto via Tailscale (login|logout|status|off)
 sudo opendongle backup > backup.json                # exporta a config

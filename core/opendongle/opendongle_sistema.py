@@ -491,6 +491,57 @@ def _trabalho_atualizar(instalar):
         "erro": "" if r.returncode == 0 else (r.stderr or r.stdout)[-200:]})
 
 
+# --------------------------------------------------------------- TAREFAS LONGAS
+# Instalar pacotes (Tor, Tailscale, PipeWire) leva minutos: dentro da
+# requisição do painel a conexão cai no meio (o repassador larga depois de
+# 60 s sem tráfego). Vira unit temporária, e a página acompanha pelo /run.
+TAREFA_JSON = f"{RUN}/tarefa.json"
+UNIT_TAREFA = "opendongle-tarefa"
+TAREFAS = {
+    "tor": "Navegação via Tor",
+    "remoto": "Acesso remoto (Tailscale)",
+    "audio-bt": "Áudio Bluetooth",
+}
+
+
+def tarefa_iniciar(nome, **opcoes):
+    if nome not in TAREFAS:
+        return {"ok": False, "erro": "Tarefa desconhecida."}
+    if _unit_ativa(UNIT_TAREFA):
+        return {"ok": False, "erro": "Já tem uma instalação em andamento; aguarde terminar."}
+    _gravar_json(TAREFA_JSON, {"nome": nome, "titulo": TAREFAS[nome], "etapa": "rodando",
+                               "quando": time.time()})
+    _disparar(UNIT_TAREFA, "tarefa", nome, json.dumps(opcoes))
+    return {"ok": True, "aviso": f"Instalando {TAREFAS[nome]} em segundo plano. Pode levar "
+            "alguns minutos; esta página atualiza sozinha."}
+
+
+def tarefa_estado(nome):
+    est = _ler_json(TAREFA_JSON)
+    if not est or est.get("nome") != nome:
+        return None
+    if est.get("etapa") == "rodando" and not _unit_ativa(UNIT_TAREFA):
+        est.update(etapa="erro", erro="A instalação foi interrompida.")
+    return est
+
+
+def _trabalho_tarefa(nome, opcoes):
+    import opendongle_engine as eng   # só aqui: o engine não depende deste módulo
+    try:
+        if nome == "tor":
+            r = eng.tor_set(True)
+        elif nome == "remoto":
+            r = eng.remoto_set(True, opcoes.get("lan", False), opcoes.get("saida", False))
+        else:
+            r = eng.audio_bt_set(True)
+    except Exception as e:   # o estado precisa sair de "rodando" de qualquer jeito
+        r = {"ok": False, "erro": f"Erro inesperado: {e}"}
+    _gravar_json(TAREFA_JSON, {"nome": nome, "titulo": TAREFAS[nome], "quando": time.time(),
+                               "etapa": "ok" if r.get("ok") else "erro",
+                               "aviso": r.get("aviso", ""), "erro": r.get("erro", ""),
+                               "link_login": r.get("link_login", "")})
+
+
 # --------------------------------------------------------------- ENERGIA
 def energia(acao):
     if acao not in ("reboot", "poweroff"):
@@ -508,3 +559,5 @@ if __name__ == "__main__":
         _trabalho_espaco()
     elif sys.argv[1:2] == ["atualizar"]:
         _trabalho_atualizar(sys.argv[2:3] == ["instalar"])
+    elif sys.argv[1:2] == ["tarefa"]:
+        _trabalho_tarefa(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})

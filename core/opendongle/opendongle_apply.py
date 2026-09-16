@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 
+import opendongle_audio as audio
 import opendongle_config as conf
 
 DIR_ESTADO = "/etc/opendongle"
@@ -585,6 +586,21 @@ def _aplicar_ntp(ligar):
     return True
 
 
+def _aplicar_audio(cfg):
+    mudou = []
+    conteudo = audio.gerar_asound(cfg["audio"]["placa"])
+    if conteudo is None:
+        if os.path.exists(audio.ASOUND_CONF) and "GERADO pelo OpenDongle" in (_ler(audio.ASOUND_CONF) or ""):
+            os.unlink(audio.ASOUND_CONF)
+            mudou.append(audio.ASOUND_CONF)
+    elif _gravar_se_mudou(audio.ASOUND_CONF, conteudo):
+        mudou.append(audio.ASOUND_CONF)
+    # desligado e nunca instalado: nem toca nos serviços do usuário
+    if cfg["audio"]["bluetooth"] or audio.bt_instalado():
+        mudou += audio.aplicar_bt(cfg["audio"]["bluetooth"])
+    return mudou
+
+
 def _aplicar_dnsproxy(ligar):
     rc, _, _ = _run(["systemctl", "is-enabled", "dnsproxy"])
     if (rc == 0) == ligar:
@@ -812,6 +828,7 @@ def aplicar(cfg=None):
         if not cfg["tor"]["ativo"]:   # desligando: só depois do firewall normal
             mudou += _aplicar_tor(cfg)
         mudou += _aplicar_remoto(cfg)
+        mudou += _aplicar_audio(cfg)
         mudou += _aplicar_leds(cfg)
         if _aplicar_hostname(cfg["sistema"]["hostname"]):
             mudou.append("hostname")

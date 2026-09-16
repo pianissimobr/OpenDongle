@@ -54,6 +54,8 @@ PADRAO = {
     # Tailscale: acessar o dongle de longe; lan = anuncia a sub-rede da LAN,
     # saida = dongle vira exit node (internet dele usada de longe)
     "remoto": {"ativo": False, "lan": False, "saida": False},
+    # placa: id ALSA da placa padrão ("" = automático); bluetooth: PipeWire ligado
+    "audio": {"placa": "", "bluetooth": False},
 }
 
 RE_MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
@@ -176,7 +178,10 @@ def validar(cfg):
         for chave in ("wifi_cliente_confiavel", "ssh_pela_wan", "painel_pela_wan"):
             if not isinstance(fw[chave], bool):
                 erros.append(f"firewall.{chave} deve ser true/false.")
-        for secao, chaves in (("tor", ("ativo",)), ("remoto", ("ativo", "lan", "saida"))):
+        if not re.match(r"^([A-Za-z0-9_]{1,15})?$", str(cfg["audio"]["placa"])):
+            erros.append("Identificador de placa de som inválido.")
+        for secao, chaves in (("tor", ("ativo",)), ("remoto", ("ativo", "lan", "saida")),
+                              ("audio", ("bluetooth",))):
             for chave in chaves:
                 if not isinstance(cfg[secao][chave], bool):
                     erros.append(f"{secao}.{chave} deve ser true/false.")

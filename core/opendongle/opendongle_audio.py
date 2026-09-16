@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+opendongle_audio.py — Áudio: placas USB pelo ALSA e áudio Bluetooth sob demanda
+================================================================================
+O dongle não tem placa de som própria. Som de verdade vem de:
+
+  placa de som USB  -> ALSA direto (amixer/aplay/arecord): nenhum daemon, custo
+                       zero parado
+  fone/caixa BT     -> PipeWire + WirePlumber como serviços do usuário, ligados
+                       só quando o usuário ativa (pacotes baixados na 1ª vez)
+
+Usado pelo painel e pela CLI.
+"""
+
+import math
+import os
+import re
+import struct
+import subprocess
+import time
+
+USUARIO = "user"
+UID = 1000
+PACOTES_BT = ["pipewire", "wireplumber", "libspa-0.2-bluetooth"]
+WP_CONF_DIR = f"/home/{USUARIO}/.config/wireplumber/wireplumber.conf.d"
+WP_CONF = f"{WP_CONF_DIR}/51-opendongle.conf"
+# Sem tela não há "seat" ativo, e por padrão o WirePlumber só liga o Bluetooth
+# pra sessão que está no seat: num dongle ele nunca ligaria.
+WP_CONF_CONTEUDO = """# GERADO pelo OpenDongle: aparelho sem tela, Bluetooth sem depender de seat
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+"""
+SERVICOS_USUARIO = ["pipewire.socket", "pipewire.service", "wireplumber.service"]
+SERVICOS_GLOBAIS = SERVICOS_USUARIO + ["filter-chain.service"]
+ASOUND_CONF = "/etc/asound.conf"
+RE_ID_PLACA = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+
+
+def _run(cmd, timeout=15, entrada=None):
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout, input=entrada)
+        return r.returncode, r.stdout, r.stderr.decode(errors="replace").strip()
+    except subprocess.TimeoutExpired:
+        return 124, b"", "timeout"
+    except FileNotFoundError:
+        return 127, b"", f"comando não encontrado: {cmd[0]}"
+
+
+def _texto(cmd, timeout=15):
+    rc, out, err = _run(cmd, timeout)
+    return rc, out.decode(errors="replace").strip(), err
+
+
+# --------------------------------------------------------------- ALSA (placas)
+def _placas_alsa():
+    """(índice, id, nome, usb) das placas reais: a Loopback do diagnóstico é
+    virtual e não entra."""
+    placas = []
+    try:
+        linhas = open("/proc/asound/cards").read().splitlines()
+    except OSError:
+        return placas
+    for linha in linhas:
+        m = re.match(r"^\s*(\d+)\s+\[(\S+)\s*\]:\s*(.*?)\s+-\s+(.*)$", linha)
+        if not m or m.group(2) == "Loopback":
+            continue
+        indice = int(m.group(1))
+        placas.append({"indice": indice, "id": m.group(2), "nome": m.group(4),
+                       "usb": os.path.exists(f"/proc/asound/card{indice}/usbid")})
+    return placas
+
+
+def _controles(indice):
+    """Controles simples do amixer com volume de reprodução ou captura."""
+    _, out, _ = _texto(["amixer", "-c", str(indice), "scontents"], 10)
+    controles, atual = [], None
+    for linha in out.splitlines():
+        m = re.match(r"^Simple mixer control '(.+)',(\d+)$", linha)
+        if m:
+            atual = {"nome": m.group(1), "caps": "", "volume": None, "mudo": None, "tipo": ""}
+            controles.append(atual)
+            continue
+        if atual is None:
+            continue
+        linha = linha.strip()
+        if linha.startswith("Capabilities:"):
+            atual["caps"] = linha
+        pct = re.search(r"\[(\d+)%\]", linha)
+        chave = re.search(r"\[(on|off)\]", linha)
+        if pct and atual["volume"] is None:
+            atual["volume"] = int(pct.group(1))
+        if chave and atual["mudo"] is None:
+            atual["mudo"] = chave.group(1) == "off"
+    saida = []
+    for c in controles:
+        if "pvolume" in c["caps"] or "volume" in c["caps"].split():
+            c["tipo"] = "saída"
+        elif "cvolume" in c["caps"]:
+            c["tipo"] = "entrada"
+        else:
+            continue
+        del c["caps"]
+        saida.append(c)
+    return saida
+
+
+def placa_padrao_atual():
+    try:
+        m = re.search(r'slave\.pcm\s+"hw:([A-Za-z0-9_]+)"', open(ASOUND_CONF).read())
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def placas():
+    lista = []
+    for p in _placas_alsa():
+        p["controles"] = _controles(p["indice"])
+        lista.append(p)
+    return {"ok": True, "placas": lista, "padrao": placa_padrao_atual()}
+
+
+def _placa_por_id(ident):
+    return next((p for p in _placas_alsa() if p["id"] == ident), None)
+
+
+def ajustar(placa_id, controle, volume=None, mudo=None):
+    p = _placa_por_id(placa_id)
+    if not p:
+        return {"ok": False, "erro": "Placa de som não encontrada (foi desplugada?)."}
+    if controle not in {c["nome"] for c in _controles(p["indice"])}:
+        return {"ok": False, "erro": "Controle inválido."}
+    args = []
+    if volume is not None:
+        try:
+            volume = max(0, min(100, int(volume)))
+        except (TypeError, ValueError):
+            return {"ok": False, "erro": "Volume inválido."}
+        args.append(f"{volume}%")
+    if mudo is not None:
+        args.append("mute" if mudo else "unmute")
+    rc, _, err = _texto(["amixer", "-q", "-c", str(p["indice"]), "sset", controle] + args, 10)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não ajustou: {err[:120]}"}
+    estado = "mudo" if mudo else (f"{volume}%" if volume is not None else "ligado")
+    return {"ok": True, "aviso": f"{controle}: {estado}."}
+
+
+def gerar_asound(placa_id):
+    if not placa_id:
+        return None
+    return ("# GERADO pelo OpenDongle a partir de /etc/opendongle/config.json\n"
+            f'pcm.!default {{\n  type plug\n  slave.pcm "hw:{placa_id}"\n}}\n'
+            f"ctl.!default {{\n  type hw\n  card {placa_id}\n}}\n")
+
+
+def _tom(segundos=1.5, taxa=48000, freq=440):
+    n = int(segundos * taxa)
+    return b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * freq * i / taxa)))
+                    for i in range(n))
+
+
+def _pico(dados):
+    if len(dados) < 4:
+        return 0
+    amostras = struct.unpack(f"<{len(dados) // 2}h", dados[:len(dados) // 2 * 2])
+    return round(100 * max(abs(a) for a in amostras) / 32767)
+
+
+def testar_saida(placa_id):
+    p = _placa_por_id(placa_id)
+    if not p:
+        return {"ok": False, "erro": "Placa de som não encontrada."}
+    rc, _, err = _run(["aplay", "-q", "-D", f"plughw:{p['indice']}", "-f", "S16_LE", "-r", "48000",
+                       "-c", "1", "-t", "raw"], 10, _tom())
+    if rc != 0:
+        return {"ok": False, "erro": f"Não tocou: {err[:120]}"}
+    return {"ok": True, "aviso": "Tocou um som de teste (lá 440 Hz, 1,5 s)."}
+
+
+def testar_entrada(placa_id):
+    p = _placa_por_id(placa_id)
+    if not p:
+        return {"ok": False, "erro": "Placa de som não encontrada."}
+    rc, dados, err = _run(["arecord", "-q", "-D", f"plughw:{p['indice']}", "-f", "S16_LE",
+                           "-r", "16000", "-c", "1", "-d", "3", "-t", "raw"], 10)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não gravou (a placa tem microfone?): {err[:100]}"}
+    pico = _pico(dados)
+    return {"ok": True, "aviso": f"Nível máximo do microfone em 3 s: {pico}%"
+            + (" — está captando." if pico >= 5 else " — quase nada: fale perto ou confira o volume de entrada.")}
+
+
+# --------------------------------------------------------------- Bluetooth (PipeWire)
+def _como_usuario(cmd, timeout=15, entrada=None):
+    env = ["env", f"XDG_RUNTIME_DIR=/run/user/{UID}",
+           f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{UID}/bus"]
+    return _run(["runuser", "-u", USUARIO, "--"] + env + cmd, timeout, entrada)
+
+
+def bt_instalado():
+    return all(os.path.exists(b) for b in ("/usr/bin/pipewire", "/usr/bin/wireplumber", "/usr/bin/wpctl"))
+
+
+def bt_ativo():
+    rc, _, _ = _como_usuario(["systemctl", "--user", "is-active", "--quiet", "wireplumber.service"], 10)
+    return rc == 0
+
+
+def aplicar_bt(ligar):
+    """Liga/desliga PipeWire+WirePlumber do usuário. Levanta RuntimeError."""
+    mudou = []
+    if ligar:
+        if not bt_instalado():
+            raise RuntimeError("PipeWire não está instalado.")
+        os.makedirs(WP_CONF_DIR, exist_ok=True)
+        atual = open(WP_CONF).read() if os.path.exists(WP_CONF) else ""
+        if atual != WP_CONF_CONTEUDO:
+            with open(WP_CONF, "w") as f:
+                f.write(WP_CONF_CONTEUDO)
+            _run(["chown", "-R", f"{USUARIO}:{USUARIO}", f"/home/{USUARIO}/.config/wireplumber"])
+            mudou.append("wireplumber.conf")
+        _run(["loginctl", "enable-linger", USUARIO], 15)
+        for _ in range(20):   # o user@1000 sobe com o linger
+            if os.path.exists(f"/run/user/{UID}/bus"):
+                break
+            time.sleep(0.5)
+        if mudou or not bt_ativo():
+            _como_usuario(["systemctl", "--user", "enable"] + SERVICOS_USUARIO, 30)
+            rc, _, err = _como_usuario(["systemctl", "--user", "restart", "pipewire.service",
+                                        "wireplumber.service"], 40)
+            if rc != 0:
+                raise RuntimeError(f"PipeWire não subiu: {err[:160]}")
+            mudou.append("ligou áudio bluetooth")
+        return mudou
+    # o pacote do Debian habilita o PipeWire pra TODO usuário (global): sem isto
+    # ele sobe em qualquer login SSH, mesmo "desligado" (visto ao vivo, com o
+    # filter-chain junto). Ligado, ele fica habilitado só pro usuário do dongle.
+    rc, out, _ = _texto(["systemctl", "--global", "is-enabled"] + SERVICOS_GLOBAIS, 10)
+    if "enabled" in out.split():
+        _run(["systemctl", "--global", "disable"] + SERVICOS_GLOBAIS, 30)
+        mudou.append("pipewire global desabilitado")
+    if os.path.exists(f"/run/user/{UID}/bus"):
+        if bt_ativo():
+            mudou.append("desligou áudio bluetooth")
+        _como_usuario(["systemctl", "--user", "disable", "--now"] + SERVICOS_GLOBAIS, 30)
+    rc, out, _ = _texto(["loginctl", "show-user", USUARIO, "-p", "Linger", "--value"], 10)
+    if out == "yes":
+        _run(["loginctl", "disable-linger", USUARIO], 15)
+    return mudou
+
+
+def _wpctl_status():
+    rc, out, _ = _como_usuario(["wpctl", "status"], 10)
+    return out.decode(errors="replace") if rc == 0 else ""
+
+
+def bt_aparelhos():
+    """Saídas e entradas do PipeWire (wpctl status), com padrão e volume."""
+    texto = _wpctl_status()
+    saidas, entradas, secao = [], [], None
+    em_audio = False
+    for linha in texto.splitlines():
+        limpa = linha.replace("│", " ").replace("├─", " ").replace("└─", " ").strip()
+        if limpa.startswith("Audio"):
+            em_audio = True
+        elif limpa.startswith(("Video", "Settings")):
+            em_audio = False
+        if not em_audio:
+            continue
+        if limpa.startswith("Sinks:"):
+            secao = saidas
+            continue
+        if limpa.startswith("Sources:"):
+            secao = entradas
+            continue
+        if limpa.endswith(":"):
+            secao = None
+            continue
+        m = re.match(r"^(\*)?\s*(\d+)\.\s+(.+?)\s+\[vol:\s*([\d.]+)(\s+MUTED)?\]", limpa)
+        if m and secao is not None:
+            secao.append({"id": int(m.group(2)), "nome": m.group(3), "padrao": bool(m.group(1)),
+                          "volume": round(float(m.group(4)) * 100), "mudo": bool(m.group(5))})
+    # o PipeWire enxerga todas as placas (a Loopback do diagnóstico, placas
+    # USB que já têm cartão próprio): aqui só entra o que vem do Bluetooth
+    bt = lambda x: 'api.bluez5' in _como_usuario(["wpctl", "inspect", str(x["id"])], 10)[1].decode(errors="replace")
+    return {"ok": True, "saidas": [x for x in saidas if bt(x)],
+            "entradas": [x for x in entradas if bt(x)]}
+
+
+def _no_valido(no_id):
+    try:
+        no_id = int(no_id)
+    except (TypeError, ValueError):
+        return None
+    lista = bt_aparelhos()
+    return no_id if any(x["id"] == no_id for x in lista["saidas"] + lista["entradas"]) else None
+
+
+def bt_ajustar(no_id, volume=None, mudo=None, padrao=False):
+    no_id = _no_valido(no_id)
+    if no_id is None:
+        return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
+    if padrao:
+        _como_usuario(["wpctl", "set-default", str(no_id)], 10)
+    if volume is not None:
+        try:
+            volume = max(0, min(150, int(volume)))
+        except (TypeError, ValueError):
+            return {"ok": False, "erro": "Volume inválido."}
+        _como_usuario(["wpctl", "set-volume", str(no_id), f"{volume / 100:.2f}"], 10)
+    if mudo is not None:
+        _como_usuario(["wpctl", "set-mute", str(no_id), "1" if mudo else "0"], 10)
+    return {"ok": True, "aviso": "Áudio ajustado."}
+
+
+def bt_testar_saida(no_id):
+    no_id = _no_valido(no_id)
+    if no_id is None:
+        return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
+    rc, _, err = _como_usuario(["pw-cat", "--playback", "--target", str(no_id), "--format", "s16",
+                                "--rate", "48000", "--channels", "1", "-"], 12, _tom())
+    if rc != 0:
+        return {"ok": False, "erro": f"Não tocou: {err[:120]}"}
+    return {"ok": True, "aviso": "Tocou um som de teste."}
+
+
+def bt_testar_entrada(no_id):
+    no_id = _no_valido(no_id)
+    if no_id is None:
+        return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
+    rc, dados, err = _como_usuario(["timeout", "3", "pw-cat", "--record", "--target", str(no_id),
+                                    "--format", "s16", "--rate", "16000", "--channels", "1", "-"], 10)
+    if not dados:
+        return {"ok": False, "erro": f"Não gravou: {err[:120]}"}
+    pico = _pico(dados)
+    return {"ok": True, "aviso": f"Nível máximo do microfone em 3 s: {pico}%."}

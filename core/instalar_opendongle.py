@@ -50,7 +50,7 @@ ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
         "opendongle_discovery.py", "opendongle_config.py",
         "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
-        "opendongle_sistema.py", "opendongle_bluetooth.py",
+        "opendongle_sistema.py", "opendongle_bluetooth.py", "opendongle_audio.py",
         "usb-role-autosense.sh"]
 
 # Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o

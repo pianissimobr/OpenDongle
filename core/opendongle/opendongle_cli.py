@@ -33,6 +33,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_audio as aud
 import opendongle_bluetooth as bt
 import opendongle_engine as eng
 import opendongle_sistema as sis
@@ -133,6 +134,13 @@ def main():
                                     "parear", "responder", "conectar", "desconectar",
                                     "esquecer", "reconciliar"])
     p.add_argument("valor", nargs="?", help="MAC do aparelho, ou a resposta do pareamento")
+
+    p = sub.add_parser("audio", help="placas de som e áudio Bluetooth")
+    p.add_argument("acao", nargs="?", default="status",
+                   choices=["status", "volume", "mudo", "som", "padrao", "testar", "bluetooth"])
+    p.add_argument("valores", nargs="*",
+                   help="volume PLACA CONTROLE PCT · mudo PLACA CONTROLE on|off · padrao PLACA · "
+                        "testar PLACA [saida|entrada] · bluetooth on|off")
 
     p = sub.add_parser("usb", help="aparelhos USB plugados e papel da porta")
     p.add_argument("acao", nargs="?", default="status", choices=["status", "host", "device"])
@@ -296,6 +304,31 @@ def main():
                 ap.error(f"bluetooth {a} precisa de um valor (MAC ou resposta)")
             res = {"parear": bt.parear, "responder": bt.responder, "conectar": bt.conectar,
                    "desconectar": bt.desconectar, "esquecer": bt.esquecer}[a](args.valor)
+    elif args.cmd == "audio":
+        a, v = args.acao, args.valores
+        if a == "status":
+            res = aud.placas()
+            if not args.json:
+                for pl in res["placas"]:
+                    print(f"{pl['id']}: {pl['nome']}{' (padrão)' if pl['id'] == res['padrao'] else ''}")
+                    for c in pl["controles"]:
+                        print(f"  {c['nome']} ({c['tipo']}): {c['volume']}%{' mudo' if c['mudo'] else ''}")
+                if not res["placas"]:
+                    print("Nenhuma placa de som conectada.")
+                print(f"Áudio Bluetooth: {'ligado' if aud.bt_ativo() else 'desligado'}")
+                return
+        elif a == "volume" and len(v) == 3:
+            res = aud.ajustar(v[0], v[1], v[2])
+        elif a in ("mudo", "som") and len(v) == 2:
+            res = aud.ajustar(v[0], v[1], mudo=(a == "mudo"))
+        elif a == "padrao" and len(v) <= 1:
+            res = eng.audio_placa_padrao(v[0] if v else "")
+        elif a == "testar" and v:
+            res = (aud.testar_entrada if v[1:] == ["entrada"] else aud.testar_saida)(v[0])
+        elif a == "bluetooth" and v in (["on"], ["off"]):
+            res = eng.audio_bt_set(v == ["on"])
+        else:
+            ap.error("argumentos inválidos pra 'audio' (veja --help)")
     elif args.cmd == "usb":
         if args.acao == "status":
             res = sis.usb_dispositivos()
