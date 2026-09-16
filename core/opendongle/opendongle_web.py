@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_config as conf
+import opendongle_bluetooth as bt
 import opendongle_engine as eng
 import opendongle_sistema as sis
 import opendongle_diag as diag
@@ -177,7 +178,8 @@ a.btn{{display:block;text-decoration:none;text-align:center}}
  color:var(--tx);padding:10px 0;border-bottom:1px solid var(--br)}}.linha:last-child{{border-bottom:none}}
 .item{{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--br);
  color:var(--tx);text-decoration:none}}.item:last-child{{border-bottom:none}}
-.item .ic{{font-size:1.25em;width:28px;text-align:center}}.item .tx{{flex:1;min-width:0}}
+.item{{flex-wrap:wrap}}.item .ic{{font-size:1.25em;width:28px;text-align:center}}.item .tx{{flex:1 1 150px;min-width:0}}
+.acoes{{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}}
 .item small{{display:block;color:var(--mut);margin-top:2px}}.item .seta{{color:var(--mut)}}
 .seg{{display:flex;gap:6px}}.seg button{{margin:0;padding:10px;background:var(--sec);color:var(--tx)}}
 .seg button.atual{{background:var(--ac);color:#fff}}
@@ -201,11 +203,11 @@ ROTAS_CATEGORIA = {
     "internet": ("/internet", "/hotspot", "/set-hotspot", "/mode-hotspot", "/wifi",
                  "/modem", "/rede", "/lan", "/firewall", "/fw-set", "/tor", "/remoto",
                  "/confirmar", "/rede-confirmar"),
-    "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led"),
+    "dispositivos": ("/dispositivos", "/bluetooth", "/leds", "/led", "/usb", "/usb-papel"),
     "audio": ("/audio", "/audio-test"),
     "avancadas": ("/avancadas", "/logs", "/diagnostico", "/recursos"),
 }
-_PREFIXOS_CATEGORIA = (("/bluetooth-", "dispositivos"), ("/modem-", "internet"),
+_PREFIXOS_CATEGORIA = (("/bt-", "dispositivos"), ("/modem-", "internet"),
                        ("/fixo-", "internet"), ("/redir-", "internet"),
                        ("/remoto-", "internet"))
 
@@ -288,8 +290,8 @@ def _nivel(v, aviso, critico, menor_pior=False):
 
 
 def _resumo_hardware():
-    bt = eng.bluetooth_status()
-    bt_badge = ("<span class='badge b-ok'>ligado</span>" if bt.get("ligado")
+    r = bt.resumo()   # não sobe o bluetoothd só pra mostrar o status
+    bt_badge = ("<span class='badge b-ok'>ligado</span>" if r["ligado"]
                 else "<span class='badge b-er'>desligado</span>")
     modem_badge = ("<span class='badge b-ok'>presente</span>"
                    if os.path.exists(eng.QMI_DEV)
@@ -389,7 +391,8 @@ BUSCA = [
     ("Firewall e portas", "/firewall", "firewall porta redirecionar abrir ssh bloquear"),
     ("Navegação via Tor", "/tor", "tor anonimo privacidade onion"),
     ("Acesso remoto (Tailscale)", "/remoto", "remoto tailscale vpn acessar de longe exit node"),
-    ("Bluetooth", "/bluetooth", "bluetooth parear fone caixa teclado mouse"),
+    ("Bluetooth", "/bluetooth", "bluetooth parear fone caixa teclado mouse controle conectar visivel"),
+    ("Aparelhos USB e porta USB", "/usb", "usb pendrive webcam camera teclado mouse periferico host otg porta"),
     ("LEDs", "/leds", "led luz luzes piscar"),
     ("Áudio", "/audio", "audio som fone microfone volume"),
 ]
@@ -520,7 +523,8 @@ def tela_internet():
 def tela_dispositivos():
     return page(f"""
       <div class='card'><h1>🔌 Dispositivos</h1>
-        {item("🔵", "Bluetooth", "Parear e conectar aparelhos", "/bluetooth")}
+        {item("🔵", "Bluetooth", _sub_bt(), "/bluetooth")}
+        {item("🔌", "Aparelhos USB", _sub_usb(), "/usb")}
         {item("💡", "LEDs", "O que cada luz do dongle mostra", "/leds")}
       </div>""", "Dispositivos")
 
@@ -832,80 +836,135 @@ def tela_atualizacoes(r=None):
       </div>""", "Atualizações")
 
 
-def _linha_dispositivo(d, acao=None):
-    """acao = (rota, rotulo) do botão, só aparece se logado (quem chama
-    já decide isso antes de passar acao ou não)."""
-    botao = ""
-    if acao:
-        botao = (f"<form method='post' action='{acao[0]}' style='margin:0'>"
-                 f"<input type='hidden' name='mac' "
-                 f"value='{html.escape(d['mac'], quote=True)}'>"
-                 f"<button class='sec' style='width:auto;margin:0;"
-                 f"padding:6px 12px'>{acao[1]}</button></form>")
-    return (f"<div class='linha'><span>{html.escape(d['nome'])}<br>"
-            f"<small style='color:var(--mut)'>{html.escape(d['mac'])}</small>"
-            f"</span>{botao}</div>")
+def _sub_bt():
+    r = bt.resumo()
+    if not r["ligado"]:
+        return "Desligado"
+    return f"Ligado · {r['pareados']} aparelho(s) pareado(s)" if r["pareados"] else "Ligado · nenhum aparelho pareado"
 
 
-def tela_bluetooth(logado, m="", erro=False, encontrados=None):
-    bt = eng.bluetooth_status()
-    if not bt["ok"]:
-        return page(f"""<div class='card'><h1>🔵 Bluetooth</h1>
-          {msg(bt['erro'], 'er')}
-          </div>""")
+def _sub_usb():
+    u = sis.usb_dispositivos()
+    if u["papel"] == "device":
+        return "Porta ligada a um PC (modo rede USB)"
+    return f"{len(u['aparelhos'])} aparelho(s) plugado(s)"
 
-    estado = ("<span class='badge b-ok'>ligado</span>" if bt["ligado"]
-              else "<span class='badge b-er'>desligado</span>")
-    conectados = ", ".join(html.escape(d["nome"]) for d in bt["conectados"]) or "nenhum"
-    pareados_html = "".join(_linha_dispositivo(
-        d, ("/bluetooth-forget", "Esquecer") if logado else None)
-        for d in bt["pareados"]) or \
-        "<p style='color:var(--mut)'>Nenhum aparelho pareado.</p>"
 
-    encontrados_html = ""
-    if encontrados is not None:
-        if encontrados:
-            encontrados_html = ("<div class='card'><h2>Encontrados</h2>" +
-                "".join(_linha_dispositivo(d, ("/bluetooth-pair", "Parear"))
-                        for d in encontrados) + "</div>")
+def _form_bt(acao, rotulo, campos=None, classe="sec", confirmar=""):
+    ocultos = "".join(f"<input type='hidden' name='{_e(k)}' value='{_e(v)}'>"
+                      for k, v in (campos or {}).items())
+    js = f" onsubmit=\"return confirm('{confirmar}')\"" if confirmar else ""
+    return (f"<form method='post' action='{acao}' style='margin:0'{js}>{ocultos}"
+            f"<button class='{classe}' style='width:auto;margin:0;padding:6px 12px'>{_e(rotulo)}</button></form>")
+
+
+def _cartao_pareamento(p):
+    if not p:
+        return ""
+    etapa, codigo = p.get("etapa"), _e(p.get("codigo", ""))
+    if etapa == "confirmar":
+        corpo = (f"<p>O aparelho mostra o código <b style='font-size:1.4em'>{codigo}</b>? "
+                 "Confira na tela dele e confirme nos dois.</p><div class='row'>"
+                 + _form_bt("/bt-responder", "Sim, é esse", {"valor": "sim"}, "")
+                 + _form_bt("/bt-responder", "Não", {"valor": "nao"}) + "</div>")
+    elif etapa in ("pin", "passkey"):
+        dica = "PIN (em geral 0000 ou 1234)" if etapa == "pin" else "Código numérico mostrado no aparelho"
+        corpo = (f"<form method='post' action='/bt-responder'><label>{dica}</label>"
+                 "<input name='valor' inputmode='numeric' maxlength='16' required autofocus>"
+                 "<button>Enviar</button></form>")
+    elif etapa == "digitar":
+        corpo = f"<p>Digite <b style='font-size:1.4em'>{codigo}</b> no aparelho e aperte Enter.</p>"
+    elif etapa == "ok":
+        corpo = msg("Pareado e conectado.")
+    elif etapa == "erro":
+        corpo = msg(p.get("erro") or "Não pareou.", "er")
+    else:
+        corpo = "<p>Pareando… deixe o aparelho perto e em modo de pareamento.</p>"
+    return f"<div class='card'><h2>Pareamento · {_e(p.get('mac', ''))}</h2>{corpo}</div>"
+
+
+def tela_bluetooth(logado, r=None):
+    if not logado:
+        return page(f"""
+      <div class='card'><h1>🔵 Bluetooth</h1>
+        {item("🔵", "Bluetooth", _sub_bt())}
+        <p>Entre com a senha de administração pra parear e conectar aparelhos.</p>
+        <a class='btn' href='/config'><button>Entrar</button></a>
+      </div>""", "Bluetooth")
+    est = bt.estado()
+    if not est["ok"]:
+        return page(f"<div class='card'><h1>🔵 Bluetooth</h1>{msg(est['erro'], 'er')}</div>", "Bluetooth")
+    p = est["pareamento"]
+    esperando = p and p.get("etapa") in ("iniciando", "digitar")
+    atualizar = est["buscando"] or esperando
+
+    def linha(a):
+        detalhes = [a["tipo"]]
+        if a["conectado"]:
+            detalhes.append("conectado")
+        if a["bateria"] is not None:
+            detalhes.append(f"bateria {a['bateria']}%")
+        if a["audio"] and a["pareado"]:
+            detalhes.append("áudio pela categoria Áudio")
+        if a["pareado"]:
+            acoes = (_form_bt("/bt-desconectar", "Desconectar", {"mac": a["mac"]}) if a["conectado"]
+                     else _form_bt("/bt-conectar", "Conectar", {"mac": a["mac"]}))
+            acoes += _form_bt("/bt-esquecer", "Esquecer", {"mac": a["mac"]},
+                              confirmar="Esquecer este aparelho?")
         else:
-            encontrados_html = ("<div class='card'><p style='color:var(--mut)'>"
-                "Nada encontrado. Deixe o aparelho em modo de pareamento "
-                "e tente de novo.</p></div>")
+            acoes = _form_bt("/bt-parear", "Parear", {"mac": a["mac"]}, "")
+        return (f"<div class='item'><span class='ic'>{a['emoji']}</span><span class='tx'>{_e(a['nome'])}"
+                f"<small>{_e(' · '.join(detalhes))}</small></span>"
+                f"<span class='acoes'>{acoes}</span></div>")
 
-    acoes = ""
-    if logado:
-        acoes = f"""
-      <div class='card'>
-        <h2>Ações</h2>
-        <div class='row'>
-          <form method='post' action='/bluetooth-power'>
-            <input type='hidden' name='ligar' value='{"0" if bt["ligado"] else "1"}'>
-            <button class='sec'>{"Desligar" if bt["ligado"] else "Ligar"} rádio</button>
-          </form>
-          <form method='post' action='/bluetooth-scan'
-                onsubmit="this.querySelector('button').textContent='Procurando…';this.querySelector('button').disabled=true">
-            <button class='sec'>Escanear (8s)</button>
-          </form>
-        </div>
-        {"<div class='aviso'>Desligar aqui é temporário — volta sozinho "
-         "no próximo boot ou ao reconectar o modem.</div>" if bt["ligado"] else ""}
-      </div>"""
-
+    pareados = [a for a in est["aparelhos"] if a["pareado"]]
+    novos = [a for a in est["aparelhos"] if not a["pareado"]]
+    lista_novos = "".join(linha(a) for a in novos) or "<p>Nenhum aparelho com nome encontrado ainda.</p>"
+    if est["sem_nome"]:
+        lista_novos += (f"<p style='font-size:.85em'>Mais {est['sem_nome']} aparelho(s) sem nome por perto "
+                        "(sensores e beacons), escondidos.</p>")
     return page(f"""
-      <div class='card'>
-        <h1>🔵 Bluetooth</h1>
-        {estado}
-        <p>Nome do dongle: <b>{html.escape(bt['nome'])}</b></p>
-        <p>Conectado agora: {conectados}</p>
-        {msg(m, 'er' if erro else 'ok')}
+      {"<meta http-equiv='refresh' content='3'>" if atualizar else ""}
+      <div class='card'><h1>🔵 Bluetooth</h1>{_resultado(r)}
+        <div class='item'><span class='ic'>🔵</span><span class='tx'>Bluetooth
+          <small>{"Ligado" if est["ligado"] else "Desligado"} · {_e(est["mac"])}</small></span>
+          {_form_bt("/bt-ligar", "Desligar" if est["ligado"] else "Ligar", {"ligar": "0" if est["ligado"] else "1"})}</div>
+        <div class='item'><span class='ic'>👁️</span><span class='tx'>Visível pra outros aparelhos
+          <small>{"Sim, por 3 minutos" if est["visivel"] else "Não"}</small></span>
+          {_form_bt("/bt-visivel", "Ocultar" if est["visivel"] else "Ficar visível", {"ligar": "0" if est["visivel"] else "1"})}</div>
+        <form method='post' action='/bt-nome'><label>Nome que os outros aparelhos veem</label>
+          <div class='row'><input name='nome' value='{_e(est["nome"])}' maxlength='32' required>
+          <button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>Salvar</button></div></form>
       </div>
-      <div class='card'>
-        <h2>Pareados</h2>
-        {pareados_html}
+      {_cartao_pareamento(p)}
+      <div class='card'><h2>Meus aparelhos</h2>
+        {"".join(linha(a) for a in pareados) or "<p>Nenhum aparelho pareado.</p>"}
       </div>
-      {acoes}
-      {encontrados_html}""")
+      <div class='card'><h2>Aparelhos por perto</h2>
+        {"<p>Procurando…</p>" if est["buscando"] else ""}
+        {lista_novos}
+        {"" if est["buscando"] else "<form method='post' action='/bt-buscar'><button class='sec'>Procurar aparelhos</button></form>"}
+        <div class='aviso'>Coloque o aparelho em modo de pareamento antes de procurar. Fones e
+        caixas de som pareiam aqui, e o som é configurado na categoria Áudio.</div>
+      </div>""", "Bluetooth")
+
+
+def tela_usb(r=None):
+    u = sis.usb_dispositivos()
+    host = u["papel"] == "host"
+    lista = "".join(item(a["emoji"], a["nome"], f"{a['tipo']} · {a['id']}") for a in u["aparelhos"]) \
+        or "<p>Nenhum aparelho USB plugado.</p>"
+    return page(f"""
+      <div class='card'><h1>🔌 Aparelhos USB</h1>{_resultado(r)}
+        {item("🔁", "Papel da porta USB", "Periférico (host): aparelhos USB podem ser plugados" if host
+              else "PC (device): o dongle aparece como rede USB no computador")}
+        {_form_bt("/usb-papel", "Mudar pra modo PC" if host else "Mudar pra modo periférico",
+                  {"papel": "device" if host else "host"},
+                  confirmar="Se o dongle estiver ligado num PC, a rede USB cai até voltar ao modo PC ou reiniciar. Continuar?")}
+        <div class='aviso'>No boot o dongle escolhe sozinho: PC detectado vira modo PC; senão,
+        periférico. No modo periférico ele precisa de energia externa (cabo OTG com alimentação).</div>
+      </div>
+      <div class='card'><h2>Plugados agora</h2>{lista}</div>""", "Aparelhos USB")
 
 
 def tela_modem(logado, m="", erro=False):
@@ -1429,6 +1488,9 @@ class Painel(BaseHTTPRequestHandler):
                     else self._send(tela_login(voltar="/")))
         if path == "/bluetooth":
             return self._send(tela_bluetooth(self._logado()))
+        if path == "/usb":
+            return (self._send(tela_usb()) if self._logado()
+                    else self._send(tela_login(voltar=path)))
         if path == "/modem":
             return self._send(tela_modem(self._logado()))
         if path == "/audio":
@@ -1579,22 +1641,23 @@ class Painel(BaseHTTPRequestHandler):
             _chave(renovar=True)
             return self._send(tela_senha(r.get("aviso")),
                               extra={"Set-Cookie": _cookie_sessao()})
-        if path == "/bluetooth-power":
-            r = eng.bluetooth_power(f.get("ligar") == "1")
-            return self._send(tela_bluetooth(True,
-                m=(r.get("aviso") if r["ok"] else r["erro"]), erro=not r["ok"]))
-        if path == "/bluetooth-scan":
-            r = eng.bluetooth_scan()
-            return self._send(tela_bluetooth(True,
-                encontrados=r.get("encontrados", [])))
-        if path == "/bluetooth-pair":
-            r = eng.bluetooth_pair(f.get("mac", ""))
-            return self._send(tela_bluetooth(True,
-                m=(r.get("aviso") if r["ok"] else r["erro"]), erro=not r["ok"]))
-        if path == "/bluetooth-forget":
-            r = eng.bluetooth_forget(f.get("mac", ""))
-            return self._send(tela_bluetooth(True,
-                m=(r.get("aviso") if r["ok"] else r["erro"]), erro=not r["ok"]))
+        acoes_bt = {"/bt-ligar": lambda: bt.ligar(f.get("ligar") == "1"),
+                    "/bt-visivel": lambda: bt.visivel(f.get("ligar") == "1"),
+                    "/bt-nome": lambda: bt.renomear(f.get("nome")),
+                    "/bt-buscar": bt.buscar,
+                    "/bt-parear": lambda: bt.parear(f.get("mac")),
+                    "/bt-responder": lambda: bt.responder(f.get("valor")),
+                    "/bt-conectar": lambda: bt.conectar(f.get("mac")),
+                    "/bt-desconectar": lambda: bt.desconectar(f.get("mac")),
+                    "/bt-esquecer": lambda: bt.esquecer(f.get("mac"))}
+        if path in acoes_bt:
+            r = acoes_bt[path]()
+            # tela nova (GET) depois da ação: recarregar não repete o POST, e a
+            # mensagem de erro aparece; as de sucesso já estão no próprio estado
+            return self._send(tela_bluetooth(True, r if not r["ok"] or path in
+                                             ("/bt-nome", "/bt-ligar", "/bt-visivel", "/bt-buscar") else None))
+        if path == "/usb-papel":
+            return self._send(tela_usb(sis.usb_papel(f.get("papel"))))
         if path == "/modem-reconectar":
             r = eng.modem_reconectar()
             return self._send(tela_modem(True,
@@ -1716,6 +1779,11 @@ def servir_ativado():
         try:
             os.unlink(FLAG_PRONTO)
         except OSError:
+            pass
+        try:
+            # painel dormindo: sem aparelho pareado, o bluetoothd dorme junto
+            bt.reconciliar(parar=True)
+        except Exception:
             pass
 
 

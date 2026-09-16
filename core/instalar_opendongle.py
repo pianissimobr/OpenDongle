@@ -13,8 +13,8 @@ Coloca no dongle, via SSH:
   - painel web sob demanda (opendongle-web.socket/.service): sobe no
     primeiro acesso ("Carregando painel…") e dorme depois de 5 min ocioso
   - usb-role-autosense.sh (grupos, Bluetooth, papel USB, 4G plug-and-play)
-  - módulos do Bluetooth e LED triggers carregados em todo boot, e o
-    bluetooth.service (bluetoothd) desmascarado e ativo
+  - módulos do Bluetooth e LED triggers carregados em todo boot; bluetoothd
+    sob demanda (sempre ligado só se houver aparelho pareado)
   - config central em /etc/opendongle/config.json (migra SSID/senha/APNs
     atuais) aplicada: dnsmasq, firewall nftables, ip_forward e APN
   - rede sem NetworkManager: systemd-networkd + hostapd (hotspot) ou
@@ -50,7 +50,7 @@ ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "uplink_guard.py", "opendongle_led.py", "opendongle_diag.py",
         "opendongle_discovery.py", "opendongle_config.py",
         "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
-        "opendongle_sistema.py",
+        "opendongle_sistema.py", "opendongle_bluetooth.py",
         "usb-role-autosense.sh"]
 
 # Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o
@@ -250,12 +250,18 @@ def main():
         "EOF\n"
         "modprobe -a " + " ".join(MODULOS_BT + MODULOS_LEDTRIG) +
         " || echo \"aviso: algum modulo do Bluetooth/LED nao carregou\"\n"
-        # versões antigas do otimizar_dongle.py mascaravam o bluetooth.service;
-        # sem o bluetoothd, o bluetoothctl do painel não funciona. Não é fatal:
-        # sem bluez ainda, o usb-role-autosense instala no próximo boot.
+        # versões antigas do otimizar_dongle.py mascaravam o bluetooth.service.
+        # bluetoothd sob demanda: fica habilitado só se houver aparelho pareado
+        # (reconecta no boot); sem nenhum, o painel sobe quando usa. Sem bluez
+        # ainda, o usb-role-autosense instala no próximo boot.
         "systemctl unmask bluetooth.service >/dev/null 2>&1; "
-        "systemctl enable --now bluetooth.service >/dev/null 2>&1 "
-        "|| echo \"aviso: bluetooth.service nao ativou (bluez ausente?)\"\n"
+        # o BlueZ esquece aparelhos encontrados (não pareados) 30 s depois da
+        # busca: pouco pra ler a lista e escolher no painel
+        "mc=/etc/bluetooth/main.conf; if [ -f \"$mc\" ]; then "
+        "sed -i -E \"s/^#?[[:space:]]*TemporaryTimeout[[:space:]]*=.*/TemporaryTimeout = 300/\" \"$mc\"; "
+        "grep -q \"^TemporaryTimeout\" \"$mc\" || sed -i \"/^\\[General\\]/a TemporaryTimeout = 300\" \"$mc\"; fi\n"
+        "python3 /opt/opendongle/opendongle_cli.py bluetooth reconciliar >/dev/null 2>&1 "
+        "|| echo \"aviso: bluetooth nao reconciliado (bluez ausente?)\"\n"
         # config central: na 1a vez migra SSID/senha/APNs atuais e gera
         # dnsmasq, firewall (nftables), ip_forward e APN
         # rede sem NetworkManager (etapa [5/7]) precisa de hostapd e iw;

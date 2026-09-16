@@ -402,6 +402,48 @@ def hardware():
             "ligado_ha": f"{uptime // 86400}d {uptime % 86400 // 3600}h {uptime % 3600 // 60}min"}
 
 
+# --------------------------------------------------------------- USB
+ROLE_SW = "/sys/class/usb_role/ci_hdrc.0-role-switch/role"
+# classe USB (da interface) -> (emoji, tipo)
+_CLASSES_USB = {"01": ("🎧", "Áudio"), "02": ("🌐", "Rede/modem"), "03": ("⌨️", "Teclado, mouse ou controle"),
+                "06": ("📷", "Câmera fotográfica"), "07": ("🖨️", "Impressora"),
+                "08": ("💾", "Armazenamento"), "09": ("🔀", "Hub USB"), "0a": ("🔌", "Serial"),
+                "0e": ("📹", "Câmera de vídeo"), "e0": ("🔵", "Bluetooth/sem fio"),
+                "ef": ("🧩", "Multifunção"), "ff": ("🧩", "Específico do fabricante")}
+
+
+def usb_dispositivos():
+    """Aparelhos plugados na porta USB (modo host), lidos do sysfs."""
+    lista = []
+    for d in sorted(glob.glob("/sys/bus/usb/devices/*")):
+        nome = os.path.basename(d)
+        if ":" in nome or nome.startswith("usb"):
+            continue   # interfaces e o hub raiz não são aparelhos
+        classes = sorted({_ler(i).lower() for i in glob.glob(f"{d}/*:*/bInterfaceClass")} - {""})
+        principal = next((c for c in classes if c not in ("09", "ef", "ff")), classes[0] if classes else "")
+        emoji, tipo = _CLASSES_USB.get(principal, ("🔌", "Aparelho USB"))
+        lista.append({"emoji": emoji, "tipo": tipo,
+                      "nome": " ".join(x for x in (_ler(f"{d}/manufacturer"), _ler(f"{d}/product")) if x)
+                      or f"{_ler(f'{d}/idVendor')}:{_ler(f'{d}/idProduct')}",
+                      "id": f"{_ler(f'{d}/idVendor')}:{_ler(f'{d}/idProduct')}",
+                      "velocidade": _ler(f"{d}/speed")})
+    return {"ok": True, "papel": _ler(ROLE_SW), "aparelhos": lista}
+
+
+def usb_papel(novo):
+    """Troca na hora o papel da porta (vale até o próximo boot, quando o
+    usb-role-autosense decide de novo)."""
+    if novo not in ("host", "device"):
+        return {"ok": False, "erro": "Papel inválido."}
+    try:
+        with open(ROLE_SW, "w") as f:
+            f.write(novo)
+    except OSError as e:
+        return {"ok": False, "erro": f"Não trocou: {e}"}
+    return {"ok": True, "aviso": "Porta em modo periférico: aparelhos USB podem ser plugados."
+            if novo == "host" else "Porta em modo PC: o dongle volta a aparecer como rede USB."}
+
+
 # --------------------------------------------------------------- ATUALIZAÇÕES
 def atualizacoes_status():
     estado = _ler_json(ATUALIZACOES_JSON) or {"etapa": "nunca", "pendentes": None}

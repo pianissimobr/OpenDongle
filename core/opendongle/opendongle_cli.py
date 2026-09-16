@@ -23,6 +23,8 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle restaurar backup.json
   sudo opendongle reset
   sudo opendongle rede migrar|confirmar|reverter
+  sudo opendongle bluetooth status|buscar|parear MAC|responder sim|conectar MAC
+  sudo opendongle usb [host|device]
 """
 
 import argparse
@@ -31,6 +33,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opendongle_bluetooth as bt
 import opendongle_engine as eng
 import opendongle_sistema as sis
 import opendongle_diag as diag
@@ -124,6 +127,15 @@ def main():
     p.add_argument("acao", choices=["on", "off", "status", "login", "logout"])
     p.add_argument("--lan", action="store_true", help="anuncia a LAN do dongle")
     p.add_argument("--saida", action="store_true", help="dongle vira exit node")
+
+    p = sub.add_parser("bluetooth", help="Bluetooth: status, ligar, buscar, parear, conectar…")
+    p.add_argument("acao", choices=["status", "ligar", "desligar", "visivel", "oculto", "buscar",
+                                    "parear", "responder", "conectar", "desconectar",
+                                    "esquecer", "reconciliar"])
+    p.add_argument("valor", nargs="?", help="MAC do aparelho, ou a resposta do pareamento")
+
+    p = sub.add_parser("usb", help="aparelhos USB plugados e papel da porta")
+    p.add_argument("acao", nargs="?", default="status", choices=["status", "host", "device"])
 
     sub.add_parser("hardware", help="placa, eMMC, rádios, modem e MACs")
 
@@ -256,6 +268,44 @@ def main():
             res = eng.remoto_logout()
         if res.get("link_login") and not args.json:
             print(f"Login: {res['link_login']}")
+    elif args.cmd == "bluetooth":
+        a = args.acao
+        if a == "status":
+            res = bt.estado()
+            if res["ok"] and not args.json:
+                print(f"Bluetooth {'ligado' if res['ligado'] else 'desligado'} · {res['nome']} "
+                      f"· {'visível' if res['visivel'] else 'oculto'}")
+                for x in res["aparelhos"]:
+                    extra = [x["tipo"]] + (["pareado"] if x["pareado"] else []) + \
+                        (["conectado"] if x["conectado"] else []) + \
+                        ([f"bateria {x['bateria']}%"] if x["bateria"] is not None else [])
+                    print(f"  {x['mac']}  {x['nome']}  ({', '.join(extra)})")
+                if res["pareamento"]:
+                    print(f"  pareamento: {res['pareamento']}")
+                return
+        elif a in ("ligar", "desligar"):
+            res = bt.ligar(a == "ligar")
+        elif a in ("visivel", "oculto"):
+            res = bt.visivel(a == "visivel")
+        elif a == "buscar":
+            res = bt.buscar()
+        elif a == "reconciliar":
+            res = bt.reconciliar()
+        else:
+            if not args.valor:
+                ap.error(f"bluetooth {a} precisa de um valor (MAC ou resposta)")
+            res = {"parear": bt.parear, "responder": bt.responder, "conectar": bt.conectar,
+                   "desconectar": bt.desconectar, "esquecer": bt.esquecer}[a](args.valor)
+    elif args.cmd == "usb":
+        if args.acao == "status":
+            res = sis.usb_dispositivos()
+            if not args.json:
+                print(f"Papel da porta: {res['papel']}")
+                for x in res["aparelhos"]:
+                    print(f"  {x['id']}  {x['nome']}  ({x['tipo']})")
+                return
+        else:
+            res = sis.usb_papel(args.acao)
     elif args.cmd == "hardware":
         res = sis.hardware()
         if not args.json:
