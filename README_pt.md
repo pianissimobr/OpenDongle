@@ -80,6 +80,7 @@ Para quem quer entender ou usar peça por peça:
 - **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
 - **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
 - **`opendongle_localizar.py`** — roda no PC; acha o IP do dongle na rede local quando `opendongle.local` não resolve (sem depender de USB nem de entrar no roteador).
+- **`teste_campo.py`** — roda no PC; teste de campo guiado: roteiro passo a passo + logs do dongle cruzados num relatório. Veja [TESTE_DE_CAMPO.md](TESTE_DE_CAMPO.md) e [CHECKLIST_TESTE_CAMPO.md](CHECKLIST_TESTE_CAMPO.md).
 
 ---
 

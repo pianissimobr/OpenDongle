@@ -28,3 +28,6 @@ known_hosts
 *.swp
 .idea/
 .vscode/
+
+# Sessões do teste de campo (logs do dongle, dados pessoais)
+testes/
