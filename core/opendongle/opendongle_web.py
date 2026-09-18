@@ -223,6 +223,7 @@ ROTAS_CATEGORIA = {
                   "/servico-set", "/kernel", "/config-arquivo"),
 }
 _PREFIXOS_CATEGORIA = (("/bt-", "dispositivos"), ("/modem-", "internet"),
+                       ("/wifi-", "internet"),
                        ("/fixo-", "internet"), ("/redir-", "internet"),
                        ("/remoto-", "remoto"), ("/audio-", "audio"))
 
@@ -328,6 +329,26 @@ def _resumo_hardware():
             f"<a class='linha' href='/audio'><span>🎧 Áudio</span>{audio_badge}</a>")
 
 
+def _bloco_endereco(st):
+    """Onde abrir o painel. No modo cliente o endereço vem do roteador de
+    casa, muda de rede pra rede e é o dado mais procurado do painel: fica
+    escrito aqui, e o último visto continua aparecendo depois (pelo cabo USB
+    dá pra descobrir onde o dongle estava)."""
+    end = st.get("endereco")
+    linhas = [f"<p style='margin-top:16px'>Para abrir este painel: "
+              f"<b>opendongle.local</b> ou <b>{eng.ip_lan()}</b> "
+              f"(este último pelo cabo USB).</p>"]
+    if end and end["agora"]:
+        linhas.append(f"<p>Na rede <b>{_e(end['ssid'])}</b> ele está atendendo em "
+                      f"<b>{_e(end['ip'])}</b> — anote esse endereço.</p>")
+    elif end:
+        quando = time.strftime("%d/%m às %H:%M", time.localtime(end["quando"]))
+        linhas.append(f"<p style='color:var(--mut)'>Na última vez em que esteve na "
+                      f"rede <b>{_e(end['ssid'])}</b>, o endereço era "
+                      f"<b>{_e(end['ip'])}</b> ({quando}).</p>")
+    return "".join(linhas)
+
+
 def tela_status():
     st = eng.status()
     sa = eng.saude_sistema()
@@ -378,8 +399,7 @@ def tela_status():
         {badge}
         <p>{linha}</p>
         <p>Modo atual: <b>{modo}</b></p>{ssid}
-        <p style='margin-top:16px'>Para acessar este painel a qualquer
-        momento, digite <b>opendongle.local</b> (ou {eng.ip_lan()}).</p>
+        {_bloco_endereco(st)}
       </div>
       <div class='card'>
         <h2>📊 Saúde do sistema</h2>
@@ -395,6 +415,7 @@ def tela_status():
 # Índice de busca com sinônimos coloquiais (título, rota, palavras).
 BUSCA = [
     ("Status e saúde do sistema", "/status", "status saude cpu ram memoria disco temperatura ligado internet"),
+    ("Endereço do dongle na rede", "/status", "ip endereco qual o ip achar encontrar descobrir painel nao abre"),
     ("Conta e senha", "/senha", "senha admin trocar password login entrar sair usuario nome de usuario renomear conta sudo"),
     ("Data, hora e fuso horário", "/hora", "data hora relogio errada fuso horario ntp automatica"),
     ("Espaço em disco", "/espaco", "espaco disco cheio armazenamento liberar limpar ocupando pesado"),
@@ -473,6 +494,18 @@ def tela_ajuda():
       </script>""", "Ajuda")
 
 
+def _detalhe_modo(st):
+    """Complemento da linha de modo na tela inicial: o nome da rede no
+    hotspot, ou a rede e o endereço no modo cliente (onde o endereço é o
+    dado que o usuário precisa anotar)."""
+    if st.get("hotspot_ssid"):
+        return " · rede " + _e(st["hotspot_ssid"])
+    end = st.get("endereco")
+    if end and end["agora"]:
+        return f" · {_e(end['ssid'])} · {_e(end['ip'])}"
+    return ""
+
+
 def tela_inicio(extra=""):
     st = eng.status()
     badge = ("<span class='badge b-ok'>conectado à internet</span>" if st["internet"]
@@ -490,7 +523,7 @@ def tela_inicio(extra=""):
       </div>
       <div class='card'>
         <h1>🔌 OpenDongle</h1>{badge}
-        <p>{_e(modo)}{" · rede " + _e(st['hotspot_ssid']) if st.get('hotspot_ssid') else ""}</p>
+        <p>{_e(modo)}{_detalhe_modo(st)}</p>
         {extra}
         {item("📊", "Status e saúde", "CPU, RAM, disco e temperatura", "/status")}
       </div>
@@ -579,10 +612,15 @@ def tela_internet():
     modo = (f"Hotspot · {w['hotspot']['ssid']}" if w["modo"] == "hotspot"
             else f"Cliente · {w['cliente']['ssid']}")
     lig = lambda v: "ligado" if v else "desligado"
+    sub_wifi = "O hotspot desliga enquanto conectado"
+    if w["modo"] == "cliente":
+        end = eng.endereco_cliente()
+        if end and end["agora"]:
+            sub_wifi = f"Em {end['ssid']} · painel em {end['ip']}"
     return page(f"""
       <div class='card'><h1>🌐 Internet</h1>
         {item("📡", "Wi-Fi e hotspot", modo, "/hotspot")}
-        {item("📶", "Conectar a uma rede Wi-Fi", "O hotspot desliga enquanto conectado", "/wifi")}
+        {item("📶", "Conectar a uma rede Wi-Fi", sub_wifi, "/wifi")}
         {item("📱", "Modem 4G e chip", "Operadora, sinal e APN", "/modem")}
       </div>
       <div class='card'><h2>Rede local</h2>
@@ -704,7 +742,69 @@ def tela_recursos():
       </div>""", "Memória por serviço")
 
 
-def tela_wifi(erro=""):
+SCRIPT_AUTO = """<script>(function(){
+ const on=document.getElementById('auto-on'),caixa=document.getElementById('auto-caixa'),
+  todas=document.getElementById('auto-todas'),lista=document.getElementById('auto-lista');
+ const pinta=()=>{caixa.style.display=on.checked?'block':'none';
+  if(lista){const t=todas&&todas.checked;lista.style.opacity=t?'.45':'1';
+   lista.style.pointerEvents=t?'none':'auto';
+   if(t)lista.querySelectorAll("input[type=checkbox]").forEach(c=>c.checked=true)}};
+ on.addEventListener('change',pinta);if(todas)todas.addEventListener('change',pinta);
+ pinta();
+})();</script>"""
+
+
+def _caixa(nome, texto, marcado, ident=""):
+    return (f"<label style='display:flex;gap:10px;align-items:center;margin:10px 0'>"
+            f"<input type='checkbox' name='{nome}' value='1' style='width:auto'"
+            f"{' id=' + ident if ident else ''}{' checked' if marcado else ''}>"
+            f"{texto}</label>")
+
+
+def _cartao_auto():
+    """Conexão automática: quais redes conhecidas o dongle procura ao ligar.
+    Nenhuma marcada (ou nenhuma por perto) = hotspot, o modo de resgate."""
+    info = eng.redes_conhecidas()
+    if not info["ok"]:
+        return f"<div class='card'>{msg(info['erro'], 'er')}</div>"
+    auto, todas = info["auto"], info["auto_todas"]
+    if info["redes"]:
+        linhas = "".join(
+            "<div class='linha'>"
+            + _caixa(f"rede-{i}",
+                     _e(r["ssid"]) + (" <span class='badge b-ok'>conectada</span>"
+                                      if r["conectada"] else ""),
+                     todas or r["auto"])
+            + f"<input type='hidden' name='ssid-{i}' value='{_e(r['ssid'])}'>"
+            + f"<button class='sec' style='width:auto;margin:0;padding:6px 12px'"
+              f" formaction='/wifi-esquecer' name='esquecer' value='{_e(r['ssid'])}'"
+              f" formnovalidate>Esquecer</button></div>"
+            for i, r in enumerate(info["redes"]))
+    else:
+        linhas = ("<p style='color:var(--mut)'>O dongle ainda não conhece nenhuma "
+                  "rede. Conecte numa acima e ela aparece aqui.</p>")
+    return f"""
+      <div class='card'>
+        <h2>Conexão automática</h2>
+        <p>Sem ela, o dongle começa <b>sempre como hotspot</b> quando liga — é
+        assim que você o reencontra se perder o endereço dele na rede.</p>
+        <form method='post' action='/wifi-auto'>
+          {_caixa("auto", "Habilitar conexão automática do dongle na rede conhecida",
+                  auto, "'auto-on'")}
+          <div id='auto-caixa'>
+            <p style='margin-top:14px'><b>Selecione quais redes de conexão automática</b></p>
+            {_caixa("todas", "Conectar a todas as redes conhecidas automaticamente",
+                    todas, "'auto-todas'")}
+            <div id='auto-lista'>{linhas}</div>
+            <div class='aviso'>Ao ligar, o dongle procura as redes marcadas por
+            até 1 minuto. Se nenhuma estiver por perto, ele vira hotspot.</div>
+            <button>Salvar</button>
+          </div>
+        </form>
+      </div>{SCRIPT_AUTO}"""
+
+
+def tela_wifi(erro="", res=None):
     r = eng.listar_wifi()
     ops = "".join(
         f"<option value='{html.escape(x['ssid'], quote=True)}'>"
@@ -712,7 +812,25 @@ def tela_wifi(erro=""):
         for x in r.get("redes", [])) or "<option value=''>— nenhuma vista —</option>"
     aviso_scan = (f"<div class='aviso'>{html.escape(r['aviso'])}</div>"
                   if r.get("aviso") else "")
-    return page(f"""
+    end = eng.endereco_cliente()
+    atual = (f"<div class='card'><h2>Conectado agora</h2><p>Rede "
+             f"<b>{_e(end['ssid'])}</b> · o painel atende em "
+             f"<b>{_e(end['ip'])}</b> nesta rede.</p></div>"
+             if end and end["agora"] else "")
+    try:
+        cfg = conf.carregar()
+    except (ValueError, OSError):
+        cfg = conf.PADRAO
+    salva = cfg["wifi"]["cliente"]["ssid"]
+    # depois de um reinício o dongle cai no hotspot de propósito: reconectar
+    # sem digitar a senha de novo é o caminho normal de volta
+    salvo = (f"""<div class='card'><h2>Rede salva</h2>
+        <p>O dongle já conhece a rede <b>{_e(salva)}</b> e guardou a senha.</p>
+        <form method='post' action='/wifi-reconectar'>
+          <button>Reconectar em {_e(salva)}</button></form></div>"""
+             if salva and not (end and end["agora"]) else "")
+    cartao_auto = _cartao_auto()
+    return page(f"""{_resultado(res) if res else ""}{atual}{salvo}
       <div class='card'>
         <h1>Conectar a um Wi-Fi</h1>
         <form method='post' action='/wifi'>
@@ -729,7 +847,7 @@ def tela_wifi(erro=""):
           <button>Conectar</button>
         </form>
         {msg(erro,'er')}
-      </div>""")
+      </div>{cartao_auto}""")
 
 
 # ---------- primeiro uso (usuário final, dongle na tomada) ----------
@@ -2004,6 +2122,19 @@ class Painel(BaseHTTPRequestHandler):
                 _CTX.categoria = None
                 return self._send(tela_inicio(msg("Conectado! " + r.get("aviso", ""))))
             return self._send(tela_wifi(r["erro"]))
+        if path == "/wifi-reconectar":
+            r = eng.reconectar_wifi()
+            if r["ok"]:
+                _CTX.categoria = None
+                return self._send(tela_inicio(msg("Conectado! " + r.get("aviso", ""))))
+            return self._send(tela_wifi(r["erro"]))
+        if path == "/wifi-auto":
+            marcadas = [v for k, v in f.items()
+                        if k.startswith("ssid-") and f.get("rede-" + k[5:]) == "1"]
+            return self._send(tela_wifi(res=eng.wifi_auto(
+                f.get("auto") == "1", f.get("todas") == "1", marcadas)))
+        if path == "/wifi-esquecer":
+            return self._send(tela_wifi(res=eng.esquecer_rede(f.get("esquecer"))))
         if path == "/rede-confirmar":
             # sem login de propósito: depois de trocar o IP da LAN o cookie
             # da sessão ficou no endereço antigo. Só cancela a reversão de uma

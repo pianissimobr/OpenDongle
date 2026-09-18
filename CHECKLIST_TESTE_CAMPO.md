@@ -103,116 +103,120 @@ Modo: **USB** = dongle ligado no PC · **tomada** = carregador, sem PC · **qual
   - Esperado: Adiciona e remove sem erro; a internet dos aparelhos continua funcionando.
 
 - [ ] **24. Conectar o dongle no Wi-Fi de casa** (`net-wifi-cliente`, tomada)
-  - Fazer: Com o dongle na tomada, conecte o dongle a uma rede Wi-Fi em Internet › Conectar a uma rede Wi-Fi. Entre na mesma rede com o celular/PC e abra opendongle.local (ou use ferramentas/opendongle_localizar.py).
-  - Esperado: O dongle conecta, o hotspot some, o LED fica azul e o painel abre pela rede de casa.
+  - Fazer: Com o dongle na tomada, conecte o dongle a uma rede Wi-Fi em Internet › Conectar a uma rede Wi-Fi. ANOTE o endereço que a tela mostrar ao conectar. Entre na mesma rede com o celular/PC e abra esse endereço (ou opendongle.local, ou ferramentas/opendongle_localizar.py).
+  - Esperado: A tela informa o endereço recebido do roteador; o hotspot some, o LED fica azul e o painel abre nesse endereço pela rede de casa.
 
-- [ ] **25. Voltar ao hotspot** (`net-voltar-hotspot`, tomada)
+- [ ] **25. Resgate: religar devolve o hotspot** (`net-resgate-boot`, tomada)
+  - Fazer: Com o dongle conectado no Wi-Fi de casa, tire da tomada, espere 5 segundos e ligue de novo. Espere cerca de 1 minuto e procure a rede do dongle no celular.
+  - Esperado: A rede Wi-Fi do dongle volta sozinha (todo boot começa no hotspot). No painel, em Conectar a uma rede Wi-Fi, o botão Reconectar devolve a rede de casa sem pedir a senha.
+
+- [ ] **26. Voltar ao hotspot** (`net-voltar-hotspot`, tomada)
   - Fazer: Pelo painel na rede de casa, em Wi-Fi e hotspot toque em Virar hotspot. Conecte o celular no hotspot.
   - Esperado: O hotspot volta, o LED fica verde e o celular navega.
 
-- [ ] **26. Internet pelo chip 4G** (`net-4g`, tomada)
+- [ ] **27. Internet pelo chip 4G** (`net-4g`, tomada)
   - Fazer: Com um chip com dados, ligue o dongle na tomada. Conecte o celular no hotspot e navegue. Abra Internet › Modem 4G e chip.
   - Esperado: Navega pelo 4G; a página do modem mostra operadora e sinal; Reconectar 4G volta a conectar.
 
-- [ ] **27. Navegação via Tor** (`net-tor`, qualquer)
+- [ ] **28. Navegação via Tor** (`net-tor`, qualquer)
   - Fazer: Em Internet › Navegação via Tor, ligue (na 1ª vez instala), acompanhe até terminar e abra check.torproject.org no celular conectado ao dongle. Depois desligue.
   - Esperado: A instalação termina sozinha; o site confirma que está usando Tor; ao desligar a navegação volta ao normal.
 
 ## Acesso remoto
 
-- [ ] **28. Ligar o Tailscale** (`remoto-tailscale`, qualquer)
+- [ ] **29. Ligar o Tailscale** (`remoto-tailscale`, qualquer)
   - Fazer: Em Acesso remoto, ligue (na 1ª vez instala), use o link de login, entre na sua conta e, de outro aparelho na conta Tailscale, abra http://IP-do-tailscale.
   - Esperado: Status “conectado” com nome e IP; o painel abre pelo IP do Tailscale.
 
-- [ ] **29. Tailscale: LAN e saída de internet** (`remoto-opcoes`, qualquer)
+- [ ] **30. Tailscale: LAN e saída de internet** (`remoto-opcoes`, qualquer)
   - Fazer: Marque as opções de LAN e exit node, salve, aprove no admin do Tailscale e teste de outro aparelho.
   - Esperado: Com aprovação, o aparelho remoto alcança a LAN do dongle e/ou sai pela internet dele.
 
-- [ ] **30. Desligar o Tailscale** (`remoto-desligar`, qualquer)
+- [ ] **31. Desligar o Tailscale** (`remoto-desligar`, qualquer)
   - Fazer: Toque em Sair da conta e depois em Desligar acesso remoto.
   - Esperado: Status “desligado”; a memória usada volta a cair (Opções avançadas › Memória por serviço).
 
-- [ ] **31. Sessões abertas** (`remoto-sessoes`, USB)
+- [ ] **32. Sessões abertas** (`remoto-sessoes`, USB)
   - Fazer: Abra um SSH no PC (ssh usuario@192.168.100.1) e veja Acesso remoto › Sessões abertas. Toque em Encerrar nessa sessão.
   - Esperado: A sessão aparece com a origem; ao encerrar, o SSH cai na hora e some da lista.
 
 ## Bluetooth
 
-- [ ] **32. Ligar Bluetooth e ficar visível** (`bt-ligar`, qualquer)
+- [ ] **33. Ligar Bluetooth e ficar visível** (`bt-ligar`, qualquer)
   - Fazer: Em Dispositivos › Bluetooth, ligue, toque em Ficar visível e procure o dongle no celular.
   - Esperado: O celular encontra o dongle pelo nome dele; ao Ocultar, some da busca.
 
-- [ ] **33. Parear um fone ou caixa** (`bt-parear`, qualquer)
+- [ ] **34. Parear um fone ou caixa** (`bt-parear`, qualquer)
   - Fazer: Coloque o fone em modo de pareamento, toque em Procurar aparelhos e depois em Parear no fone. Responda se aparecer código.
   - Esperado: O fone aparece na busca com nome; o pareamento conclui e ele fica na lista de pareados.
 
-- [ ] **34. Som no fone Bluetooth** (`bt-audio`, qualquer)
+- [ ] **35. Som no fone Bluetooth** (`bt-audio`, qualquer)
   - Fazer: Em Áudio, toque em Ligar áudio Bluetooth (na 1ª vez instala e leva minutos). Conecte o fone em Bluetooth e use o teste de som em Áudio.
   - Esperado: A instalação termina; o fone aparece como saída e toca o som de teste.
 
-- [ ] **35. Fone depois de reiniciar** (`bt-reconectar`, qualquer)
+- [ ] **36. Fone depois de reiniciar** (`bt-reconectar`, qualquer)
   - Fazer: Reinicie o dongle com o fone pareado. Depois toque em Conectar no fone.
   - Esperado: O fone continua pareado e conecta de novo sem parear outra vez.
 
-- [ ] **36. Desconectar e esquecer** (`bt-esquecer`, qualquer)
+- [ ] **37. Desconectar e esquecer** (`bt-esquecer`, qualquer)
   - Fazer: Toque em Desconectar e depois em Esquecer. Desligue o áudio Bluetooth em Áudio.
   - Esperado: O fone sai da lista; o áudio Bluetooth desliga e a memória volta a cair.
 
 ## Dispositivos
 
-- [ ] **37. Aparelho USB (pendrive ou placa de som)** (`usb-aparelho`, tomada)
+- [ ] **38. Aparelho USB (pendrive ou placa de som)** (`usb-aparelho`, tomada)
   - Fazer: Com o dongle na tomada e um adaptador OTG, plugue um pendrive ou placa de som. Abra Dispositivos › Aparelhos USB.
   - Esperado: O aparelho aparece na lista; a placa de som aparece em Áudio com volume e teste.
 
 ## Áudio
 
-- [ ] **38. Placa de som USB** (`audio-placa`, tomada)
+- [ ] **39. Placa de som USB** (`audio-placa`, tomada)
   - Fazer: Com uma placa de som USB, ajuste volume, mudo e use o teste de som e de microfone.
   - Esperado: O volume muda de verdade; o teste toca; o teste de microfone diz se está captando.
 
 ## Dispositivos
 
-- [ ] **39. Significado das luzes** (`leds`, tomada)
+- [ ] **40. Significado das luzes** (`leds`, tomada)
   - Fazer: Observe os LEDs: hotspot com e sem internet, cliente Wi-Fi, e no PC (USB). Compare com Ajuda › luzes.
   - Esperado: Verde fixo/piscando no hotspot, azul fixo/piscando no cliente, tudo apagado no PC.
 
 ## Primeiro uso
 
-- [ ] **40. Cadastro aparece com a senha de fábrica** (`cadastro-aparece`, tomada)
+- [ ] **41. Cadastro aparece com a senha de fábrica** (`cadastro-aparece`, tomada)
   - Fazer: Antes: rode `teste_campo.py senha-fabrica` com o dongle no PC (volta a senha pra 1). Ligue na tomada, conecte o celular no hotspot.
   - Esperado: O celular abre sozinho (ou ao abrir qualquer site) a tela “Bem-vindo ao seu OpenDongle”; qualquer página do painel leva a ela.
 
-- [ ] **41. Erros do cadastro** (`cadastro-erros`, tomada)
+- [ ] **42. Erros do cadastro** (`cadastro-erros`, tomada)
   - Fazer: Teste: senha do root “1”, senhas que não batem, nome com número, usuário “root”, senha do usuário igual à do root. Use Voltar e Continuar.
   - Esperado: Cada erro aparece na etapa certa sem apagar o que já foi digitado; a sugestão de usuário vem do nome.
 
-- [ ] **42. Concluir o cadastro** (`cadastro-concluir`, tomada)
+- [ ] **43. Concluir o cadastro** (`cadastro-concluir`, tomada)
   - Fazer: Preencha tudo certo e conclua. Abra o painel. Em Conta e senha confira usuário e nome.
   - Esperado: “Tudo pronto” com o nome; o painel libera já logado; usuário e nome completo aparecem na conta. (O script vai pedir as credenciais novas.)
 
-- [ ] **43. Cadastro não aparece pelo USB** (`cadastro-usb`, USB)
+- [ ] **44. Cadastro não aparece pelo USB** (`cadastro-usb`, USB)
   - Fazer: Volte a senha pra 1 (`teste_campo.py senha-fabrica`), mantenha o dongle no PC e abra o painel.
   - Esperado: O painel abre normal, sem cadastro.
 
-- [ ] **44. Console serial pede login e recupera senha** (`serial-login`, USB)
+- [ ] **45. Console serial pede login e recupera senha** (`serial-login`, USB)
   - Fazer: No PC: `sudo screen /dev/ttyACM0 115200`. Tente root com senha errada, depois root com a senha do cadastro e rode `passwd <seu usuário>`.
   - Esperado: Pede login (não entra direto); senha errada é recusada; com a do root entra e a troca de senha do usuário funciona.
 
 ## Estabilidade
 
-- [ ] **45. Trocar entre tomada e PC várias vezes** (`est-tomada-pc`, qualquer)
+- [ ] **46. Trocar entre tomada e PC várias vezes** (`est-tomada-pc`, qualquer)
   - Fazer: Alterne 3 vezes: tomada (espere o hotspot) → PC (espere o painel pelo USB) → tomada.
   - Esperado: Cada troca termina no modo certo, sem travar e sem precisar reiniciar.
 
-- [ ] **46. Uso longo** (`est-uso-longo`, tomada)
+- [ ] **47. Uso longo** (`est-uso-longo`, tomada)
   - Fazer: Deixe o dongle na tomada com um celular navegando/vendo vídeo por 30 minutos ou mais.
   - Esperado: Sem quedas nem travamentos; o painel continua abrindo no fim.
 
-- [ ] **47. Memória no fim do teste** (`est-memoria`, qualquer)
+- [ ] **48. Memória no fim do teste** (`est-memoria`, qualquer)
   - Fazer: Abra Opções avançadas › Memória por serviço.
   - Esperado: RAM disponível confortável; nada desligado continua ocupando memória (Tor, Tailscale, PipeWire).
 
-- [ ] **48. Desligar pelo painel** (`est-desligar`, qualquer)
+- [ ] **49. Desligar pelo painel** (`est-desligar`, qualquer)
   - Fazer: Em Geral, toque em Desligar e confirme. Espere 15 s, tire e recoloque.
   - Esperado: Desliga (o painel para de responder) e volta normal ao recolocar.
 

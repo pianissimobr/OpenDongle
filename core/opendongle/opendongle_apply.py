@@ -280,7 +280,14 @@ LinkLocalAddressing=no
 
 
 def gerar_wlan0_network(cfg):
-    return CABECALHO + """[Match]
+    # ClientIdentifier=mac: por padrão o networkd se identifica por um DUID
+    # derivado do machine-id, e roteador doméstico trata DUID novo como
+    # cliente novo — o endereço mudava depois de reflash. Pelo MAC o lease é
+    # sempre o mesmo, e o dongle volta pro IP de antes.
+    # Hostname: o roteador passa a listar o dongle pelo nome e, em boa parte
+    # deles, a resolver esse nome na LAN — uma segunda porta de entrada que
+    # não depende do mDNS.
+    return CABECALHO + f"""[Match]
 Name=wlan0
 
 [Link]
@@ -289,6 +296,11 @@ RequiredForOnline=no
 [Network]
 DHCP=yes
 IPv6AcceptRA=yes
+
+[DHCPv4]
+ClientIdentifier=mac
+SendHostname=yes
+Hostname={cfg["sistema"]["hostname"]}
 """
 
 
@@ -315,20 +327,34 @@ wpa_psk={_psk_hex(hs['ssid'], hs['senha'])}
 """
 
 
+def redes_automaticas(cfg):
+    """Redes conhecidas que entram na conexão automática (vazio = desligada)."""
+    w = cfg["wifi"]
+    if not w["auto"]:
+        return []
+    return [r for r in w["conhecidas"] if w["auto_todas"] or r["auto"]]
+
+
+def _bloco_rede(ssid, senha, prioridade):
+    seguranca = (f"psk={_psk_hex(ssid, senha)}" if senha else "key_mgmt=NONE")
+    return (f"network={{\n\tssid={ssid.encode().hex()}\n\tscan_ssid=1\n"
+            f"\tpriority={prioridade}\n\t{seguranca}\n}}\n")
+
+
 def gerar_wpa_supplicant(cfg):
+    """A rede da sessão vem com prioridade alta; as outras automáticas entram
+    junto, pro wpa_supplicant pegar a que estiver ao alcance no boot (e voltar
+    sozinho se a de casa cair)."""
     cl, pais = cfg["wifi"]["cliente"], cfg["wifi"]["hotspot"]["pais"]
-    seguranca = (f"psk={_psk_hex(cl['ssid'], cl['senha'])}" if cl["senha"]
-                 else "key_mgmt=NONE")
+    blocos = _bloco_rede(cl["ssid"], cl["senha"], 10)
+    for r in redes_automaticas(cfg):
+        if r["ssid"] != cl["ssid"]:
+            blocos += _bloco_rede(r["ssid"], r["senha"], 1)
     return CABECALHO + f"""ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
 update_config=0
 country={pais}
 
-network={{
-\tssid={cl['ssid'].encode().hex()}
-\tscan_ssid=1
-\t{seguranca}
-}}
-"""
+{blocos}"""
 
 
 def gerar_torrc(cfg):
@@ -652,19 +678,74 @@ def _aplicar_rede(cfg):
 
     liga, desliga, conf_mudou = ((SVC_CLIENTE, SVC_AP, cl_mudou) if cliente
                                  else (SVC_AP, SVC_CLIENTE, ap_mudou))
-    if _ativo(desliga) or _run(["systemctl", "is-enabled", "--quiet", desliga])[0] == 0:
-        _run(["systemctl", "disable", "--now", desliga], timeout=40)
+    if _ativo(desliga):
+        _run(["systemctl", "stop", desliga], timeout=40)
         if not cliente:
             # sem o wpa_supplicant o wlan0 fica com o IP do Wi-Fi antigo
             _run(["ip", "addr", "flush", "dev", "wlan0"])
         mudou.append(f"parou {desliga}")
+
+    # Quem sobe no BOOT: sem conexão automática é o hotspot, o modo de
+    # resgate — entrar num Wi-Fi vale até reiniciar, e quem perdeu o endereço
+    # do dongle tira da tomada e o acha de novo. Com a conexão automática
+    # ligada, sobe o cliente e o plano B é vigiar_auto_boot(), que vira
+    # hotspot se nenhuma rede marcada aparecer. Habilitado fica sempre
+    # exatamente um dos dois: juntos, brigam pelo wlan0.
+    no_boot = SVC_CLIENTE if redes_automaticas(cfg) else SVC_AP
+    for svc in (SVC_AP, SVC_CLIENTE):
+        if _habilitar(svc, svc == no_boot):
+            mudou.append(("no boot sobe " if svc == no_boot else "não sobe no boot: ")
+                         + svc)
+
     if conf_mudou or not _ativo(liga):
-        _run(["systemctl", "enable", liga])
         rc, _, err = _run(["systemctl", "restart", liga], timeout=40)
         if rc != 0:
             raise RuntimeError(f"{liga} não subiu: {err[:160]}")
         mudou.append(f"reiniciou {liga}")
     return mudou
+
+
+def _habilitar(unidade, sim):
+    """enable/disable idempotente: devolve True se precisou mexer."""
+    ja = _run(["systemctl", "is-enabled", "--quiet", unidade])[0] == 0
+    if ja == sim:
+        return False
+    _run(["systemctl", "enable" if sim else "disable", unidade], timeout=30)
+    return True
+
+
+def preparar_boot():
+    """Roda cedo no boot, antes do systemd-networkd e do hostapd: devolve o
+    dongle ao hotspot. Só mexe em ARQUIVO — nada de systemctl, que nessa hora
+    ainda pode não responder; quem já deixou o hostapd habilitado pro boot foi
+    o aplicar(). A rede de casa continua salva, a um toque de reconectar."""
+    try:
+        cfg = conf.carregar()
+    except (ValueError, OSError) as e:
+        return {"ok": True, "aviso": f"Config ilegível ({e}); nada a fazer."}
+    autos = redes_automaticas(cfg)
+    if autos:
+        # vai tentar as redes marcadas: a da sessão é a última usada, se ela
+        # estiver entre as automáticas; senão, a primeira da lista
+        atual = cfg["wifi"]["cliente"]["ssid"]
+        escolhida = next((r for r in autos if r["ssid"] == atual), autos[0])
+        cfg["wifi"]["modo"] = "cliente"
+        cfg["wifi"]["cliente"] = {"ssid": escolhida["ssid"], "senha": escolhida["senha"]}
+        conf.salvar(cfg)
+        _gravar_se_mudou(WPA_CONF, gerar_wpa_supplicant(cfg), 0o600)
+        _gravar_se_mudou(NET_WLAN0, gerar_wlan0_network(cfg))
+        return {"ok": True, "aviso": f"Boot procurando {len(autos)} rede(s) "
+                f"automática(s); sem nenhuma ao alcance, vira hotspot."}
+    if cfg["wifi"]["modo"] != "cliente":
+        return {"ok": True, "aviso": "Já sobe como hotspot."}
+    ssid = cfg["wifi"]["cliente"]["ssid"]
+    cfg["wifi"]["modo"] = "hotspot"
+    conf.salvar(cfg)
+    if os.path.exists(NET_WLAN0):
+        # senão o networkd tentaria DHCP num wlan0 que o hostapd usa como AP
+        os.unlink(NET_WLAN0)
+    _gravar_se_mudou(HOSTAPD_CONF, gerar_hostapd(cfg), 0o600)
+    return {"ok": True, "aviso": f"Boot no hotspot; a rede {ssid} segue salva."}
 
 
 def _guardar_reversao(estado):

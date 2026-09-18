@@ -153,6 +153,94 @@ def modo_wifi():
     return None
 
 
+# ------------------------------------------------- ENDEREÇO NA REDE DE CASA
+# Em modo cliente o hotspot cai (limitação do chip) e o dongle passa a ter o
+# endereço que o roteador emprestou — que ninguém tem como adivinhar. Guardamos
+# o último visto POR REDE, em disco: assim, plugando o cabo USB (que reinicia o
+# dongle), o painel ainda sabe dizer onde ele estava.
+ENDERECOS = "/etc/opendongle/enderecos.json"
+MAX_ENDERECOS = 8
+
+
+def endereco_wifi():
+    """IP que o wlan0 recebeu como cliente: {'ip', 'prefixo'} ou None. No
+    modo hotspot o wlan0 é porta da bridge e não tem IP próprio."""
+    rc, out, _ = _run(["ip", "-o", "-4", "addr", "show", "dev", IFACE_WIFI], timeout=5)
+    if rc != 0:
+        return None
+    for linha in out.splitlines():
+        p = linha.split()
+        if len(p) >= 4 and p[2] == "inet" and "/" in p[3]:
+            ip, _, prefixo = p[3].partition("/")
+            if prefixo.isdigit():
+                return {"ip": ip, "prefixo": int(prefixo)}
+    return None
+
+
+def ssid_cliente():
+    """Nome da rede em que o dongle entrou como cliente ('' se não entrou)."""
+    rc, out, _ = _run(["iw", "dev", IFACE_WIFI, "link"], timeout=5)
+    if rc != 0 or not out.startswith("Connected"):
+        return ""
+    for linha in out.splitlines():
+        s = linha.strip()
+        if s.startswith("SSID:"):
+            return s[5:].strip()
+    return ""
+
+
+def _ler_enderecos():
+    try:
+        with open(ENDERECOS) as f:
+            dados = json.load(f)
+        return dados if isinstance(dados, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def registrar_endereco():
+    """Anota o endereço de agora. Chamado pelo laço do uplink a cada 15 s:
+    só grava quando MUDA, porque o disco é eMMC. Devolve o registro ou None."""
+    end, ssid = endereco_wifi(), ssid_cliente()
+    if not end or not ssid:
+        return None
+    reg = {"ip": end["ip"], "quando": int(time.time())}
+    guardados = _ler_enderecos()
+    if guardados.get(ssid, {}).get("ip") == reg["ip"]:
+        return reg
+    guardados[ssid] = reg
+    if len(guardados) > MAX_ENDERECOS:   # fica só com as redes mais recentes
+        guardados = dict(sorted(guardados.items(),
+                                key=lambda kv: kv[1].get("quando", 0),
+                                reverse=True)[:MAX_ENDERECOS])
+    try:
+        os.makedirs(os.path.dirname(ENDERECOS), mode=0o700, exist_ok=True)
+        tmp = ENDERECOS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(guardados, f, ensure_ascii=False)
+        os.replace(tmp, ENDERECOS)
+    except OSError:
+        pass   # sem root (teste no PC): segue sem histórico
+    return reg
+
+
+def endereco_cliente():
+    """O que o painel mostra: o endereço de agora (se estiver em modo
+    cliente) ou o último visto, sempre com a rede e o horário."""
+    end, ssid = endereco_wifi(), ssid_cliente()
+    if end and ssid:
+        return {"ip": end["ip"], "ssid": ssid, "quando": int(time.time()),
+                "agora": True}
+    guardados = _ler_enderecos()
+    if not guardados:
+        return None
+    ssid, reg = max(guardados.items(), key=lambda kv: kv[1].get("quando", 0))
+    if not reg.get("ip"):
+        return None
+    return {"ip": reg["ip"], "ssid": ssid, "quando": reg.get("quando", 0),
+            "agora": False}
+
+
 # --------------------------------------------------------------- STATUS
 def _modo_atual():
     modo = modo_wifi()
@@ -179,6 +267,7 @@ def status():
         "modo": modo,
         "internet": tem_internet(),
         "hotspot_ssid": _ssid_hotspot() if modo != "wifi" else None,
+        "endereco": endereco_cliente(),
     }
 
 
@@ -677,8 +766,7 @@ def connect_wifi(ssid, senha):
     rc, out, err = _run(cmd, timeout=60)
     if rc != 0:
         return {"ok": False, "erro": f"Não conectou: {(err or out)[:140]}"}
-    err = _alterar_config(lambda c: (c["wifi"].update(modo="cliente"),
-                                     c["wifi"]["cliente"].update(ssid=ssid, senha=senha)))
+    err = _alterar_config(lambda c: _entrar_na_rede(c, ssid, senha))
     if err:
         return {"ok": False, "erro": err}
     return {"ok": True, "modo": "wifi", "ssid": ssid,
@@ -693,8 +781,7 @@ def _connect_wifi_networkd(ssid, senha):
         anterior = conf.carregar()["wifi"]
     except (ValueError, OSError) as e:
         return {"ok": False, "erro": f"Config ilegível: {e}"}
-    err = _alterar_config(lambda c: (c["wifi"].update(modo="cliente"),
-                                     c["wifi"]["cliente"].update(ssid=ssid, senha=senha)))
+    err = _alterar_config(lambda c: _entrar_na_rede(c, ssid, senha))
     if err:
         return {"ok": False, "erro": err}
     r = config_aplicar()
@@ -702,8 +789,16 @@ def _connect_wifi_networkd(ssid, senha):
         prazo = time.monotonic() + ESPERA_CONEXAO
         while time.monotonic() < prazo:
             if _wlan0_associado() and _wlan0_tem_ipv4():
-                return {"ok": True, "modo": "wifi", "ssid": ssid,
-                        "aviso": "Modo cliente ativo; o hotspot foi desligado."}
+                # o endereço emprestado pelo roteador é a única forma de voltar
+                # ao painel nessa rede: mostra na hora e guarda pra depois
+                ip = (registrar_endereco() or {}).get("ip", "")
+                partes = [f"O painel agora atende em http://{ip} nesta rede — anote."
+                          if ip else "Modo cliente ativo."]
+                partes.append("O hotspot foi desligado.")
+                if not aplic.redes_automaticas(conf.carregar()):
+                    partes.append("Ao reiniciar, o dongle volta a ser hotspot.")
+                return {"ok": True, "modo": "wifi", "ssid": ssid, "ip": ip,
+                        "aviso": " ".join(partes)}
             time.sleep(2)
         motivo = ("não associou (senha errada ou rede fora de alcance?)"
                   if not _wlan0_associado() else "associou mas não recebeu IP")
@@ -715,6 +810,144 @@ def _connect_wifi_networkd(ssid, senha):
     config_aplicar()
     return {"ok": False, "erro": f"Não conectou em {ssid}: {motivo}. "
             "O modo anterior foi religado."}
+
+
+def reconectar_wifi():
+    """Volta pra última rede salva sem pedir a senha de novo. É o caminho
+    normal depois de um reinício, já que o boot cai no hotspot de propósito."""
+    try:
+        cl = conf.carregar()["wifi"]["cliente"]
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+    if not cl["ssid"]:
+        return {"ok": False, "erro": "Nenhuma rede Wi-Fi salva ainda."}
+    return connect_wifi(cl["ssid"], cl["senha"])
+
+
+def _entrar_na_rede(cfg, ssid, senha):
+    """Marca a rede como a da sessão e guarda entre as conhecidas (a senha
+    junto, pra reconectar sem digitar de novo)."""
+    cfg["wifi"].update(modo="cliente")
+    cfg["wifi"]["cliente"].update(ssid=ssid, senha=senha)
+    conhecidas = cfg["wifi"]["conhecidas"]
+    for r in conhecidas:
+        if r["ssid"] == ssid:
+            r["senha"] = senha
+            return
+    # rede nova entra marcada: se a conexão automática estiver ligada, ela já
+    # conta — e desmarcar é um toque na lista
+    conhecidas.insert(0, {"ssid": ssid, "senha": senha, "auto": True})
+    del conhecidas[conf.MAX_CONHECIDAS:]
+
+
+def redes_conhecidas():
+    """Estado da conexão automática e as redes que o dongle já conhece."""
+    try:
+        w = conf.carregar()["wifi"]
+    except (ValueError, OSError) as e:
+        return {"ok": False, "erro": f"Config ilegível: {e}"}
+    atual = ssid_cliente()
+    return {"ok": True, "auto": w["auto"], "auto_todas": w["auto_todas"],
+            "atual": atual, "salva": w["cliente"]["ssid"],
+            "redes": [{"ssid": r["ssid"], "auto": r["auto"],
+                       "conectada": r["ssid"] == atual} for r in w["conhecidas"]]}
+
+
+def esquecer_rede(ssid):
+    """Tira a rede da lista (a senha some junto). Não derruba a conexão de
+    agora: isso é decisão de quem está usando."""
+    ssid = (ssid or "").strip()
+    achou = [False]
+
+    def mudar(c):
+        antes = len(c["wifi"]["conhecidas"])
+        c["wifi"]["conhecidas"] = [r for r in c["wifi"]["conhecidas"]
+                                   if r["ssid"] != ssid]
+        achou[0] = len(c["wifi"]["conhecidas"]) < antes
+
+    err = _alterar_config(mudar)
+    if err:
+        return {"ok": False, "erro": err}
+    if not achou[0]:
+        return {"ok": False, "erro": "Essa rede não estava na lista."}
+    r = config_aplicar()
+    if r["ok"]:
+        r["aviso"] = f"A rede {ssid} foi esquecida."
+    return r
+
+
+def wifi_auto(ativo, todas=None, marcadas=None):
+    """Conexão automática: liga/desliga e escolhe quais redes entram. Sem
+    nenhuma rede marcada, o boot cai no hotspot — que é o modo de resgate."""
+    ativo, todas = bool(ativo), bool(todas)
+    marcadas = set(marcadas or [])
+
+    def mudar(c):
+        c["wifi"].update(auto=ativo, auto_todas=todas)
+        for r in c["wifi"]["conhecidas"]:
+            r["auto"] = r["ssid"] in marcadas
+
+    err = _alterar_config(mudar)
+    if err:
+        return {"ok": False, "erro": err}
+    r = config_aplicar()
+    if not r["ok"]:
+        return r
+    try:
+        quantas = len(aplic.redes_automaticas(conf.carregar()))
+    except (ValueError, OSError):
+        quantas = 0
+    if not ativo:
+        r["aviso"] = "Conexão automática desligada: ao ligar, o dongle vira hotspot."
+    elif quantas:
+        r["aviso"] = (f"Ao ligar, o dongle vai procurar {quantas} rede(s); "
+                      "sem nenhuma por perto, vira hotspot.")
+    else:
+        r["aviso"] = ("Conexão automática ligada, mas nenhuma rede marcada: "
+                      "por enquanto o dongle continua virando hotspot ao ligar.")
+    return r
+
+
+ESPERA_AUTO = 60                                 # s pra associar depois de ligar
+FLAG_AUTO = "/run/opendongle/auto-decidido"       # tmpfs: zera a cada boot
+
+
+def _uptime():
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 1e9
+
+
+def vigiar_auto_boot():
+    """Plano B da conexão automática: se nenhuma rede marcada apareceu até
+    ESPERA_AUTO segundos depois de ligar, vira hotspot. Sem isso, um Wi-Fi
+    fora do ar deixaria o dongle inalcançável. Decide uma vez por boot."""
+    if os.path.exists(FLAG_AUTO):
+        return None
+    try:
+        w = conf.carregar()["wifi"]
+    except (ValueError, OSError):
+        return None
+    decidiu = None
+    if w["modo"] != "cliente" or not w["auto"]:
+        decidiu = "sem conexão automática"
+    elif _wlan0_associado():
+        decidiu = "associou"
+    elif _uptime() >= ESPERA_AUTO:
+        decidiu = "nenhuma rede automática apareceu: virando hotspot"
+    if not decidiu:
+        return None
+    try:
+        os.makedirs(os.path.dirname(FLAG_AUTO), exist_ok=True)
+        open(FLAG_AUTO, "w").close()
+    except OSError:
+        pass
+    if not decidiu.startswith("nenhuma"):
+        return None
+    r = mode_hotspot()
+    return {"ok": r["ok"], "motivo": decidiu, "erro": r.get("erro")}
 
 
 def _listar_wifi_iw():
@@ -1235,6 +1468,12 @@ ACOES = {
     "backup": lambda a: backup(),
     "restaurar": lambda a: restaurar(a.get("texto", "")),
     "reset": lambda a: reset(),
+    "wifi-reconectar": lambda a: reconectar_wifi(),
+    "wifi-conhecidas": lambda a: redes_conhecidas(),
+    "wifi-esquecer": lambda a: esquecer_rede(a.get("ssid")),
+    "wifi-auto": lambda a: wifi_auto(a.get("ativo"), a.get("todas"),
+                                     a.get("marcadas")),
+    "rede-inicial": lambda a: aplic.preparar_boot(),
     "rede-migrar": lambda a: aplic.migrar_para_networkd(),
     "rede-confirmar": lambda a: aplic.confirmar(),
     "rede-reverter": lambda a: aplic.reverter(),

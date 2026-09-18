@@ -23,7 +23,7 @@ APN_CONF = "/etc/usb-role-autosense-apn.conf"
 NM_HOTSPOT = "/etc/NetworkManager/system-connections/hotspot.nmconnection"
 
 PADRAO = {
-    "versao": 1,
+    "versao": 2,
     "sistema": {
         "hostname": "opendongle",
         "fuso": "America/Sao_Paulo",
@@ -40,7 +40,16 @@ PADRAO = {
         "modo": "hotspot",
         "hotspot": {"ssid": "OpenDongle", "senha": "opendongle",
                     "canal": 1, "pais": "BR"},
+        # a rede da sessão atual (a última em que o dongle entrou)
         "cliente": {"ssid": "", "senha": ""},
+        # O hotspot é o modo de RESGATE: sem conexão automática, todo boot
+        # sobe nele, mesmo conhecendo redes. Com 'auto', o dongle procura no
+        # boot as redes marcadas e só vira hotspot se nenhuma aparecer — então
+        # nem assim dá pra perder o dongle de vista.
+        "auto": False,
+        "auto_todas": True,
+        # redes que o dongle já conhece: {"ssid", "senha", "auto"}
+        "conhecidas": [],
     },
     "wan": {"apn_extra": {}},
     "dns": {"criptografado": False, "servidores": ["1.1.1.1", "8.8.8.8"]},
@@ -57,6 +66,8 @@ PADRAO = {
     # placa: id ALSA da placa padrão ("" = automático); bluetooth: PipeWire ligado
     "audio": {"placa": "", "bluetooth": False},
 }
+
+MAX_CONHECIDAS = 12   # redes Wi-Fi guardadas (com senha); passou disso, cai a mais antiga
 
 RE_MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
 RE_MCCMNC = re.compile(r"^\d{3}-\d{2,3}$")
@@ -159,6 +170,21 @@ def validar(cfg):
             erros.append(f"Cliente: {validar_senha_wifi(cl['senha'])}")
         if wifi["modo"] == "cliente" and not cl["ssid"]:
             erros.append("Modo cliente precisa do nome da rede.")
+        if not (isinstance(wifi["auto"], bool) and isinstance(wifi["auto_todas"], bool)):
+            erros.append("wifi.auto e wifi.auto_todas devem ser true/false.")
+        if len(wifi["conhecidas"]) > MAX_CONHECIDAS:
+            erros.append(f"No máximo {MAX_CONHECIDAS} redes conhecidas.")
+        vistos = set()
+        for r in wifi["conhecidas"]:
+            e = validar_ssid(r.get("ssid", "")) or (r.get("senha") and
+                                                    validar_senha_wifi(r["senha"]))
+            if e:
+                erros.append(f"Rede conhecida: {e}")
+            elif r["ssid"] in vistos:
+                erros.append(f"Rede conhecida repetida: {r['ssid']}")
+            vistos.add(r.get("ssid"))
+            if not isinstance(r.get("auto"), bool):
+                erros.append("Rede conhecida: 'auto' deve ser true/false.")
 
         for mccmnc, apn in cfg["wan"]["apn_extra"].items():
             if not (RE_MCCMNC.match(mccmnc) and isinstance(apn, str)
@@ -272,7 +298,29 @@ def carregar():
         salvar(cfg)
         return cfg
     with open(CONFIG) as f:
-        return _mesclar(PADRAO, json.load(f))
+        cfg = _mesclar(PADRAO, json.load(f))
+    if _migrar(cfg):
+        try:
+            salvar(cfg)
+        except (OSError, ValueError):
+            pass   # sem permissão de escrita: segue com a migração em memória
+    return cfg
+
+
+def _migrar(cfg):
+    """Sobe configs de versões anteriores. Devolve True se mexeu."""
+    if cfg.get("versao", 1) >= PADRAO["versao"]:
+        return False
+    # v2: a rede cliente virou uma LISTA de redes conhecidas (com a senha),
+    # pra conexão automática poder escolher entre elas
+    cl = cfg["wifi"]["cliente"]
+    if cl["ssid"] and not any(r["ssid"] == cl["ssid"]
+                              for r in cfg["wifi"]["conhecidas"]):
+        cfg["wifi"]["conhecidas"].insert(0, {"ssid": cl["ssid"],
+                                             "senha": cl["senha"], "auto": True})
+    cfg["wifi"].pop("fixar_cliente", None)   # substituído por auto/auto_todas
+    cfg["versao"] = PADRAO["versao"]
+    return True
 
 
 def salvar(cfg):

@@ -66,6 +66,10 @@ O assistente pergunta se o Debian já está instalado, conduz a instalação, ot
 
 > **`opendongle.local` não abre?** Em alguns Windows o mDNS falha. Rode `python3 ferramentas/opendongle_localizar.py` no PC — ele acha o IP do dongle na rede local sozinho e já abre o painel, sem precisar de USB nem entrar no roteador.
 
+> **Não sabe o endereço que o dongle pegou no Wi-Fi de casa?** O painel mostra em **Geral › Status e saúde** — o endereço atual e também o último em que ele esteve. Pelo cabo USB (`192.168.100.1`) dá pra descobrir onde ele estava. No roteador ele aparece como **opendongle**, sempre no mesmo endereço.
+
+> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Quem prefere que ele entre sozinho liga a **conexão automática** e escolhe quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
+
 ---
 
 ## 🛠️ Os scripts

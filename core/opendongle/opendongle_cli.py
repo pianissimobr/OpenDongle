@@ -10,6 +10,7 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle hotspot --ssid MinhaRede --senha minhasenha123
   sudo opendongle wifi --ssid CasaDoFulano --senha segredo123
   sudo opendongle wifi --list
+  sudo opendongle wifi --conhecidas | --esquecer SSID | --auto on|off
   sudo opendongle mode-hotspot
   sudo opendongle senha --nova umaSenhaForte
   sudo opendongle usuario --novo lucas
@@ -23,7 +24,7 @@ o que o painel web faz, chamando o MESMO motor (opendongle_engine).
   sudo opendongle backup > backup.json
   sudo opendongle restaurar backup.json
   sudo opendongle reset
-  sudo opendongle rede migrar|confirmar|reverter
+  sudo opendongle rede migrar|confirmar|reverter|inicial
   sudo opendongle bluetooth status|buscar|parear MAC|responder sim|conectar MAC
   sudo opendongle usb [host|device]
 """
@@ -32,6 +33,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_audio as aud
@@ -61,9 +63,24 @@ def imprime(res, cru=False):
         print(f"Internet: {net}")
         if res.get("hotspot_ssid"):
             print(f"Hotspot:  {res['hotspot_ssid']}")
-    elif "redes" in res:  # list-wifi
+        end = res.get("endereco")
+        if end:
+            quando = ("" if end["agora"] else
+                      time.strftime(" — visto em %d/%m %H:%M",
+                                    time.localtime(end["quando"])))
+            print(f"Endereço: {end['ip']} na rede {end['ssid']}{quando}")
+    elif "redes" in res:  # redes por perto (list-wifi) ou conhecidas
         for r in res["redes"]:
-            print(f"  {r['sinal']:>3}%  {r['ssid']}  ({r['seg']})")
+            if "sinal" in r:
+                print(f"  {r['sinal']:>3}%  {r['ssid']}  ({r['seg']})")
+            else:
+                ligada = res["auto"] and (res["auto_todas"] or r["auto"])
+                marca = "auto" if ligada else "  --"
+                print(f"  [{marca}] {r['ssid']}"
+                      + ("  (conectada)" if r["conectada"] else ""))
+        if "auto" in res:
+            print("Conexão automática: "
+                  + ("ligada" if res["auto"] else "desligada — ao ligar, vira hotspot"))
     else:
         if res.get("ssid"):
             print(f"✓ ok — rede: {res['ssid']}")
@@ -90,7 +107,11 @@ def main():
     p = sub.add_parser("wifi", help="conecta a um Wi-Fi (ou --list)")
     p.add_argument("--ssid")
     p.add_argument("--senha", default="")
-    p.add_argument("--list", action="store_true", help="lista redes")
+    p.add_argument("--list", action="store_true", help="lista redes por perto")
+    p.add_argument("--conhecidas", action="store_true", help="lista as redes salvas")
+    p.add_argument("--esquecer", metavar="SSID", help="apaga uma rede salva")
+    p.add_argument("--auto", choices=["on", "off"],
+                   help="conexão automática às redes conhecidas ao ligar")
 
     sub.add_parser("mode-hotspot", help="volta ao modo ponto de acesso")
 
@@ -181,7 +202,7 @@ def main():
 
     p = sub.add_parser("rede", help="migra a rede pro systemd-networkd, "
                        "confirma ou reverte a última mudança de rede")
-    p.add_argument("acao", choices=["migrar", "confirmar", "reverter"])
+    p.add_argument("acao", choices=["migrar", "confirmar", "reverter", "inicial"])
 
     args = ap.parse_args()
     precisa_root()
@@ -227,8 +248,18 @@ def main():
     elif args.cmd == "hotspot":
         res = eng.set_hotspot(args.ssid, args.senha)
     elif args.cmd == "wifi":
-        res = eng.listar_wifi() if args.list else \
-            eng.connect_wifi(args.ssid, args.senha)
+        if args.list:
+            res = eng.listar_wifi()
+        elif args.conhecidas:
+            res = eng.redes_conhecidas()
+        elif args.esquecer:
+            res = eng.esquecer_rede(args.esquecer)
+        elif args.auto:
+            info = eng.redes_conhecidas()
+            res = eng.wifi_auto(args.auto == "on", info.get("auto_todas", True),
+                                [r["ssid"] for r in info.get("redes", []) if r["auto"]])
+        else:
+            res = eng.connect_wifi(args.ssid, args.senha)
     elif args.cmd == "mode-hotspot":
         res = eng.mode_hotspot()
     elif args.cmd == "senha":

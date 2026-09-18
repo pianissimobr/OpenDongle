@@ -48,16 +48,53 @@ FAQ = [
         ("wifi-casa", "Como conecto o dongle no Wi-Fi de casa?",
          "Em <a href='/wifi'>Internet › Conectar a uma rede Wi-Fi</a>, escolha a rede e "
          "digite a senha. Enquanto estiver conectado, o Wi-Fi do próprio dongle "
-         "(hotspot) fica desligado: o chip de Wi-Fi não faz os dois ao mesmo tempo. Pra "
-         "voltar a abrir o painel, entre na mesma rede de casa e use "
-         "<b>opendongle.local</b>. No computador, a ferramenta "
-         "<b>opendongle_localizar.py</b> acha o dongle na rede.",
+         "(hotspot) fica desligado: o chip de Wi-Fi não faz os dois ao mesmo tempo. "
+         "Ao conectar, o painel mostra o <b>endereço que o dongle recebeu nessa "
+         "rede</b> — anote. Depois é só entrar na mesma rede de casa e usar esse "
+         "endereço ou <b>opendongle.local</b>. A conexão vale até o dongle ser "
+         "reiniciado: ao ligar de novo ele volta a ser hotspot (veja "
+         "<a href='/ajuda#wifi-ate-reiniciar'>por quê</a>).",
          "wifi casa conectar rede cliente roteador"),
+        ("qual-ip", "Como descubro o endereço (IP) do dongle na minha rede?",
+         "Na rede de casa, quem dá o endereço é o seu roteador, e ele muda de rede pra "
+         "rede. Quatro jeitos de saber: <b>1)</b> em "
+         "<a href='/status'>Geral › Status e saúde</a> o painel mostra o endereço atual "
+         "e também o último em que ele esteve — então, ligando o dongle no computador "
+         "pelo cabo USB e abrindo <b>{ip}</b>, você descobre onde ele estava. "
+         "<b>2)</b> <b>opendongle.local</b> costuma funcionar sem precisar do número. "
+         "<b>3)</b> na lista de aparelhos do seu roteador ele aparece como "
+         "<b>opendongle</b>, sempre com o mesmo endereço. <b>4)</b> no computador, a "
+         "ferramenta <b>opendongle_localizar.py</b> acha o dongle na rede sozinha.",
+         "ip endereco qual descobrir achar encontrar numero painel nao abre sumiu"),
         ("voltar-hotspot", "Como volto a ter o Wi-Fi do dongle (hotspot)?",
-         "Em <a href='/hotspot'>Internet › Wi-Fi e hotspot</a>, toque em <b>Virar "
-         "hotspot</b>. Se você não consegue mais abrir o painel, ligue o dongle no "
-         "computador pelo cabo USB, abra <b>192.168.100.1</b> e faça por lá.",
-         "voltar hotspot wifi do dongle sumiu rede sumiu"),
+         "<b>Tire da tomada e ligue de novo.</b> O dongle sempre começa como hotspot, "
+         "mesmo conhecendo a rede de casa — é o jeito de reencontrá-lo quando você não "
+         "sabe mais o endereço dele. Sem desligar nada, dá pra fazer o mesmo em "
+         "<a href='/hotspot'>Internet › Wi-Fi e hotspot</a>, no botão <b>Virar "
+         "hotspot</b>. O cabo USB no computador (<b>192.168.100.1</b>) também sempre "
+         "funciona.",
+         "voltar hotspot wifi do dongle sumiu rede sumiu perdi resgate reiniciar"),
+        ("wifi-ate-reiniciar", "Por que o dongle sai do Wi-Fi de casa quando reinicia?",
+         "É de propósito: o Wi-Fi do próprio dongle é a porta de resgate. Como o "
+         "endereço dele na rede de casa é dado pelo roteador e pode ser esquecido, "
+         "cada vez que o dongle liga ele volta a ser hotspot — assim, na pior das "
+         "hipóteses, você tira da tomada, liga de novo e conecta no Wi-Fi dele. A rede "
+         "de casa <b>continua salva</b>: em <a href='/wifi'>Internet › Conectar a uma "
+         "rede Wi-Fi</a> aparece o botão <b>Reconectar</b>, sem digitar a senha de "
+         "novo. Se você prefere que ele entre sozinho, ligue a "
+         "<a href='/ajuda#wifi-auto'>conexão automática</a> na mesma tela.",
+         "reiniciar reinicia boot sai do wifi volta hotspot sozinho reconectar tomada"),
+        ("wifi-auto", "Como faço o dongle entrar sozinho no Wi-Fi quando liga?",
+         "Em <a href='/wifi'>Internet › Conectar a uma rede Wi-Fi</a>, marque "
+         "<b>Habilitar conexão automática do dongle na rede conhecida</b>. Abre a lista "
+         "das redes que ele já conhece (toda rede em que você conectou entra nela, com "
+         "a senha guardada) pra você escolher quais valem — ou marque <b>Conectar a "
+         "todas as redes conhecidas automaticamente</b>. Ao ligar, o dongle procura "
+         "essas redes por até um minuto; <b>se nenhuma estiver por perto, ele vira "
+         "hotspot</b>, então não dá pra perdê-lo de vista. O botão <b>Esquecer</b> "
+         "apaga uma rede da lista, senha junto.",
+         "conexao automatica entrar sozinho conectar sozinho redes conhecidas salvas "
+         "esquecer rede lista wifi automatico boot ligar"),
         ("perdi-acesso", "Mudei uma configuração de rede e perdi o acesso. E agora?",
          "Ao mudar o endereço da rede local, o dongle espera você confirmar que ainda "
          "consegue abrir o painel no endereço novo. Sem confirmação, ele "

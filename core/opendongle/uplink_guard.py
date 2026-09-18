@@ -78,9 +78,23 @@ def escrever_estado(anunciar_gateway):
 def laco():
     """Renova o estado de internet a cada INTERVALO e ajusta o anúncio de
     gateway. Roda como thread do opendongled (ou sozinho pelo main)."""
-    ultimo = None
+    ultimo = ultimo_ip = None
     while True:
         estado = eng.tem_internet(max_idade=0)
+        # de carona no mesmo laço: anota o endereço que o roteador de casa
+        # emprestou (só grava quando muda). É o que o painel mostra depois.
+        ip = (eng.registrar_endereco() or {}).get("ip")
+        if ip != ultimo_ip:
+            if ip:
+                print(f"endereço no Wi-Fi de cliente: {ip}", flush=True)
+            ultimo_ip = ip
+        # plano B da conexão automática: decide uma vez por boot se a rede
+        # marcada apareceu ou se o dongle vira hotspot (senão ficaria
+        # inalcançável quando o Wi-Fi de casa não está no ar)
+        aut = eng.vigiar_auto_boot()
+        if aut:
+            print(f"conexão automática: {aut['motivo']}"
+                  + ("" if aut["ok"] else f" — FALHOU: {aut['erro']}"), flush=True)
         if estado != ultimo:
             mudou = escrever_estado(estado)
             if mudou:

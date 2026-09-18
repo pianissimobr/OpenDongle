@@ -103,6 +103,27 @@ ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_web.py --ativado
 ExecStopPost=/bin/rm -f /run/opendongle/web-pronto
 """
 
+# Cada boot começa no hotspot: é o modo de RESGATE. Quem perdeu o endereço do
+# dongle na rede de casa tira da tomada, liga de novo e o Wi-Fi dele está lá.
+# Roda cedo de propósito — antes do systemd-networkd ler os .network e do
+# hostapd subir — e só mexe em arquivo, sem depender de D-Bus nem de rede.
+UNIT_BOOT = """[Unit]
+Description=OpenDongle: cada boot comeca no hotspot (modo de resgate)
+DefaultDependencies=no
+After=local-fs.target
+Wants=network-pre.target
+Before=network-pre.target systemd-networkd.service hostapd@wlan0.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_cli.py rede inicial
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 # Units de versões antigas, quando cada parte era um processo separado.
 UNITS_ANTIGAS = ["opendongle-uplink.service", "opendongle-led.service",
                  "opendongle-discovery.service"]
@@ -244,6 +265,9 @@ def main():
         "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
         + UNIT_USBROLE +
         "EOF\n"
+        "cat > /etc/systemd/system/opendongle-boot.service << \"EOF\"\n"
+        + UNIT_BOOT +
+        "EOF\n"
         "cat > /etc/systemd/system/opendongle-web.socket << \"EOF\"\n"
         + UNIT_WEB_SOCKET +
         "EOF\n"
@@ -308,6 +332,7 @@ def main():
         "systemctl enable opendongle.service && "
         "systemctl restart opendongle.service && "
         "systemctl enable usb-role-autosense.service && "
+        "systemctl enable opendongle-boot.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
     r = subprocess.run(ssh + [remoto],
