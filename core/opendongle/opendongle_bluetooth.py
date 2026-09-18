@@ -47,6 +47,82 @@ TIPOS = {"audio-headset": ("🎧", "Fone"), "audio-headphones": ("🎧", "Fone")
          "camera-photo": ("📷", "Câmera"), "camera-video": ("📹", "Câmera")}
 
 
+# Erros do BlueZ em português, com o que fazer. A ordem importa: o primeiro
+# trecho que casar decide a mensagem.
+ERROS_BLUEZ = [
+    ("br-connection-profile-unavailable",
+     "O dongle não tem o serviço que esse aparelho usa. Se for fone ou caixa de som, "
+     "ligue o áudio Bluetooth na categoria Áudio e tente de novo."),
+    ("profile-unavailable", "O dongle não tem o serviço que esse aparelho usa."),
+    ("AuthenticationRejected", "O aparelho recusou o pareamento. Coloque-o em modo de "
+                               "pareamento e tente de novo."),
+    ("AuthenticationFailed", "Código não confere ou foi recusado no aparelho."),
+    ("AuthenticationCanceled", "O pareamento foi cancelado no aparelho."),
+    ("AuthenticationTimeout", "O aparelho não respondeu a tempo."),
+    ("ConnectionAttemptFailed", "O aparelho não respondeu. Deixe-o ligado e por perto."),
+    ("Page Timeout", "O aparelho não respondeu. Deixe-o ligado e por perto."),
+    ("Host is down", "O aparelho está desligado ou fora de alcance."),
+    ("AlreadyExists", "Este aparelho já está pareado."),
+    ("InProgress", "Já tem uma operação de Bluetooth em andamento. Espere alguns segundos."),
+    ("not available", "Aparelho fora de alcance. Procure de novo com ele em modo de pareamento."),
+    ("NotConnected", "O aparelho não está conectado."),
+]
+
+
+def _traduz(detalhe):
+    for trecho, texto in ERROS_BLUEZ:
+        if trecho in detalhe:
+            return texto
+    return detalhe
+
+
+# Perfis de som (A2DP sink/source, AVRCP, mãos-livres e fone). Um aparelho que
+# anuncia qualquer um deles só conecta com o PipeWire do usuário no ar.
+UUIDS_AUDIO = ("0000110a", "0000110b", "0000110c", "0000110d", "0000110e",
+               "00001108", "0000111e", "0000111f")
+
+
+def eh_audio(mac, info=None):
+    """O aparelho toca ou capta som? Pelo ícone do BlueZ, pela classe ou pelos
+    perfis anunciados (o ícone falta em vários fones baratos)."""
+    if info is None:
+        _, info, _ = _ctl("info", mac, timeout=6)
+    c = _campos(info)
+    if c.get("Icon", "").startswith("audio"):
+        return True
+    if any(u in info.lower() for u in UUIDS_AUDIO):
+        return True
+    classe = re.search(r"Class: 0x([0-9a-fA-F]+)", info)
+    if classe:   # classe "major device": 0x04 = áudio/vídeo
+        return (int(classe.group(1), 16) >> 8) & 0x1f == 0x04
+    return False
+
+
+def _audio():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import opendongle_audio as aud
+    return aud
+
+
+def preparar_audio(mac, info=None):
+    """Antes de conectar um fone ou caixa: sobe o áudio Bluetooth (PipeWire)
+    sozinho, porque sem ele o BlueZ não tem perfil de som e recusa a conexão.
+    Devolve (pronto, motivo): motivo "instalar" quando falta baixar o PipeWire."""
+    try:
+        if not eh_audio(mac, info):
+            return True, ""
+        aud = _audio()
+        if aud.bt_ativo():
+            return True, ""
+        if not aud.bt_instalado():
+            return False, "instalar"
+        import opendongle_engine as eng   # grava na config e aplica, como a tela de Áudio
+        r = eng.audio_bt_set(True)
+        return bool(r.get("ok")), "" if r.get("ok") else r.get("erro", "")
+    except Exception as e:
+        return False, f"não consegui ligar o áudio Bluetooth: {e}"
+
+
 def _run(cmd, timeout=15):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -199,7 +275,7 @@ def _resultado(rc, out, err, ok_msg, erro_msg):
         return {"ok": True, "aviso": ok_msg}
     detalhe = next((l for l in (out + "\n" + err).splitlines()
                     if "Failed" in l or "Error" in l or "not available" in l), err or out)
-    return {"ok": False, "erro": f"{erro_msg}: {detalhe[:120]}"}
+    return {"ok": False, "erro": f"{erro_msg}: {_traduz(detalhe)[:200]}"}
 
 
 def ligar(sim):
@@ -247,7 +323,21 @@ def conectar(mac):
     if not mac:
         return {"ok": False, "erro": "Endereço MAC inválido."}
     _garantir_bluetoothd()
-    return _resultado(*_ctl("connect", mac, timeout=25), "Conectado.", "Não conectou")
+    pronto, motivo = preparar_audio(mac)
+    if not pronto and motivo == "instalar":
+        # o PipeWire ainda não está no dongle: quem chama (painel) instala em
+        # segundo plano, porque leva minutos
+        return {"ok": False, "instalar_audio": True,
+                "erro": "Este aparelho é de som e o dongle ainda precisa baixar o "
+                        "programa de áudio Bluetooth."}
+    r = _resultado(*_ctl("connect", mac, timeout=25), "Conectado.", "Não conectou")
+    if r["ok"]:
+        _ctl("trust", mac, timeout=8)   # reconecta sozinho no próximo boot
+        if eh_audio(mac):
+            r["aviso"] = "Conectado. Em Áudio, toque em Tocar som de teste pra ouvir."
+    elif motivo:
+        r["erro"] += f" ({motivo})"
+    return r
 
 
 def desconectar(mac):
@@ -347,9 +437,14 @@ def _trabalho_parear(mac):
             if not prontos:
                 continue
             try:
-                buffer += RE_ANSI.sub("", os.read(fd, 4096).decode(errors="replace"))
+                pedaco = RE_ANSI.sub("", os.read(fd, 4096).decode(errors="replace"))
             except OSError:
                 break
+            buffer += pedaco
+            # vai pro journal (unit temporária): sem isto não sobra rastro nenhum
+            # de um pareamento que falhou
+            sys.stderr.write(pedaco)
+            sys.stderr.flush()
             m = re.search(r"Confirm passkey (\d+)", buffer)
             if m:
                 buffer = ""
@@ -385,19 +480,48 @@ def _trabalho_parear(mac):
             if "Pairing successful" in buffer:
                 envia(f"trust {mac}")
                 time.sleep(1)
+                # fone/caixa: sobe o áudio Bluetooth antes de conectar
+                pronto, motivo = preparar_audio(mac)
+                if not pronto and motivo == "instalar":
+                    try:
+                        import opendongle_sistema as sis
+                        sis.tarefa_iniciar("audio-bt")
+                        muda(etapa="ok", codigo="",
+                             aviso="Pareado. Estou baixando o programa de áudio Bluetooth "
+                                   "(alguns minutos); quando terminar, toque em Conectar.")
+                    except Exception as e:
+                        muda(etapa="ok", codigo="", aviso=f"Pareado, mas o áudio não subiu: {e}")
+                    reconciliar()
+                    return
+                buffer = ""
                 envia(f"connect {mac}")
-                time.sleep(4)
-                muda(etapa="ok", codigo="")
+                fim_conexao = time.time() + 20
+                while time.time() < fim_conexao and "Connection successful" not in buffer:
+                    pr, _, _ = select.select([fd], [], [], 1)
+                    if not pr:
+                        continue
+                    try:
+                        pedaco = RE_ANSI.sub("", os.read(fd, 4096).decode(errors="replace"))
+                    except OSError:
+                        break
+                    buffer += pedaco
+                    sys.stderr.write(pedaco)
+                    sys.stderr.flush()
+                    if "Failed to connect" in buffer:
+                        break
+                falha_con = re.search(r"Failed to connect:?([^\n]*)", buffer)
+                aviso = ""
+                if falha_con:
+                    aviso = _traduz(falha_con.group(1).strip())
+                    if "profile" in falha_con.group(1) and _audio_bt_desligado(mac):
+                        aviso = ("Ligue o áudio Bluetooth em Áudio pra usar o som deste "
+                                 "aparelho, e depois toque em Conectar.")
+                muda(etapa="ok", codigo="", aviso=aviso)
                 reconciliar()
                 return
             falha = re.search(r"(Failed to pair[^\n]*|Device [0-9A-F:]+ not available)", buffer)
             if falha:
-                motivo = falha.group(1)
-                if "AuthenticationFailed" in motivo or "AuthenticationRejected" in motivo:
-                    motivo = "Código não confere ou foi recusado no aparelho."
-                elif "not available" in motivo:
-                    motivo = "Aparelho fora de alcance. Procure de novo com ele em modo de pareamento."
-                muda(etapa="erro", erro=motivo)
+                muda(etapa="erro", erro=_traduz(falha.group(1)))
                 return
         muda(etapa="erro", erro="Tempo esgotado.")
     finally:

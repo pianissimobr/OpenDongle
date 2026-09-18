@@ -13,6 +13,7 @@ O dongle não tem placa de som própria. Som de verdade vem de:
 Usado pelo painel e pela CLI.
 """
 
+import json
 import math
 import os
 import pwd
@@ -28,6 +29,8 @@ WP_CONF_REL = ".config/wireplumber/wireplumber.conf.d/51-opendongle.conf"
 
 def _usuario():
     return pwd.getpwuid(UID)
+
+
 # Sem tela não há "seat" ativo, e por padrão o WirePlumber só liga o Bluetooth
 # pra sessão que está no seat: num dongle ele nunca ligaria.
 WP_CONF_CONTEUDO = """# GERADO pelo OpenDongle: aparelho sem tela, Bluetooth sem depender de seat
@@ -75,6 +78,19 @@ def _placas_alsa():
         placas.append({"indice": indice, "id": m.group(2), "nome": m.group(4),
                        "usb": os.path.exists(f"/proc/asound/card{indice}/usbid")})
     return placas
+
+
+def _dispositivo_alsa(indice, captura=False):
+    """plughw:<placa>,<dispositivo>. Nem toda placa toca e grava no dispositivo
+    0 (headsets USB costumam ter a captura em outro), então vale o que a placa
+    declara em /proc/asound/cardN/pcm*p|c."""
+    sufixo = "c" if captura else "p"
+    try:
+        nums = sorted(int(n[3:-1]) for n in os.listdir(f"/proc/asound/card{indice}")
+                      if re.fullmatch(rf"pcm\d+{sufixo}", n))
+    except OSError:
+        nums = []
+    return f"plughw:{indice},{nums[0] if nums else 0}"
 
 
 def _controles(indice):
@@ -161,10 +177,23 @@ def gerar_asound(placa_id):
             f"ctl.!default {{\n  type hw\n  card {placa_id}\n}}\n")
 
 
-def _tom(segundos=1.5, taxa=48000, freq=440):
-    n = int(segundos * taxa)
-    return b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * freq * i / taxa)))
-                    for i in range(n))
+# Melodia curta (dó-mi-sol-dó) em vez de um bipe: dá pra reconhecer como som de
+# verdade, e confirma de ouvido que não é chiado nem interferência.
+MELODIA = ((523.25, 0.28), (659.25, 0.28), (783.99, 0.28), (1046.50, 0.55))
+
+
+def _tom(taxa=48000, notas=MELODIA, volume=11000):
+    dados = bytearray()
+    for freq, segundos in notas:
+        n = int(segundos * taxa)
+        rampa = int(0.012 * taxa)   # sobe e desce o volume: sem isso, estala
+        for i in range(n):
+            ganho = min(1.0, i / rampa, (n - i) / rampa)
+            # 2ª harmônica baixinha deixa o timbre menos "bipe de micro-ondas"
+            onda = (math.sin(2 * math.pi * freq * i / taxa)
+                    + 0.22 * math.sin(4 * math.pi * freq * i / taxa)) / 1.22
+            dados += struct.pack("<h", int(volume * ganho * onda))
+    return bytes(dados)
 
 
 def _pico(dados):
@@ -178,19 +207,19 @@ def testar_saida(placa_id):
     p = _placa_por_id(placa_id)
     if not p:
         return {"ok": False, "erro": "Placa de som não encontrada."}
-    rc, _, err = _run(["aplay", "-q", "-D", f"plughw:{p['indice']}", "-f", "S16_LE", "-r", "48000",
-                       "-c", "1", "-t", "raw"], 10, _tom())
+    rc, _, err = _run(["aplay", "-q", "-D", _dispositivo_alsa(p["indice"]), "-f", "S16_LE",
+                       "-r", "48000", "-c", "1", "-t", "raw"], 10, _tom())
     if rc != 0:
         return {"ok": False, "erro": f"Não tocou: {err[:120]}"}
-    return {"ok": True, "aviso": "Tocou um som de teste (lá 440 Hz, 1,5 s)."}
+    return {"ok": True, "aviso": "Tocou o som de teste (4 notas). Ouviu?"}
 
 
 def testar_entrada(placa_id):
     p = _placa_por_id(placa_id)
     if not p:
         return {"ok": False, "erro": "Placa de som não encontrada."}
-    rc, dados, err = _run(["arecord", "-q", "-D", f"plughw:{p['indice']}", "-f", "S16_LE",
-                           "-r", "16000", "-c", "1", "-d", "3", "-t", "raw"], 10)
+    rc, dados, err = _run(["arecord", "-q", "-D", _dispositivo_alsa(p["indice"], captura=True),
+                           "-f", "S16_LE", "-r", "16000", "-c", "1", "-d", "3", "-t", "raw"], 10)
     if rc != 0:
         return {"ok": False, "erro": f"Não gravou (a placa tem microfone?): {err[:100]}"}
     pico = _pico(dados)
@@ -297,6 +326,72 @@ def bt_aparelhos():
             "entradas": [x for x in entradas if bt(x)]}
 
 
+# Um fone Bluetooth só expõe microfone no perfil de chamada (HFP/HSP); no de
+# música (A2DP) ele é só saída, com som melhor. Quem decide é o usuário.
+MODOS_BT = {"musica": ("a2dp-sink", "Música (som melhor, sem microfone)"),
+            "chamada": ("headset-head-unit", "Chamada (com microfone, som pior)")}
+
+
+def bt_dispositivos(entradas=None):
+    """Aparelhos Bluetooth do PipeWire com os perfis de música e de chamada.
+    'entradas' evita repetir o wpctl quando quem chama já tem a lista."""
+    rc, out, _ = _como_usuario(["pw-dump"], 25)
+    try:
+        dados = json.loads(out.decode(errors="replace"))
+    except (ValueError, AttributeError):
+        return []
+    lista = []
+    for o in dados:
+        info = o.get("info") or {}
+        props = info.get("props") or {}
+        if not str(o.get("type", "")).endswith("Device") or props.get("device.api") != "bluez5":
+            continue
+        params = info.get("params") or {}
+        perfis = {}
+        for p in params.get("EnumProfile", []):
+            for modo, (prefixo, _) in MODOS_BT.items():
+                # "a2dp-sink" e "a2dp-sink-sbc_xq" servem: fica o primeiro
+                if str(p.get("name", "")).startswith(prefixo) and modo not in perfis:
+                    perfis[modo] = p.get("index")
+        lista.append({"id": o["id"], "nome": props.get("device.description") or "Aparelho",
+                      "perfis": perfis, "modo": ""})
+    # o "Profile" que o pw-dump devolve fica desatualizado (já visto dizendo
+    # "headset" com o aparelho em A2DP): o modo real é o que existe de nó —
+    # com microfone (Audio/Source) é chamada, só saída é música
+    # O nó do microfone continua registrado no pw-dump mesmo em modo música
+    # (visto ao vivo), então quem diz a verdade é a lista de entradas ativas.
+    if entradas is None:
+        entradas = bt_aparelhos()["entradas"]
+    com_microfone = {e["nome"] for e in entradas}
+    for d in lista:
+        d["modo"] = "chamada" if d["nome"] in com_microfone else "musica"
+    return lista
+
+
+def bt_modo_set(dev_id, modo):
+    """Troca entre música e chamada. Reconecta o áudio: leva 1 a 2 segundos."""
+    if modo not in MODOS_BT:
+        return {"ok": False, "erro": "Modo inválido."}
+    try:
+        dev_id = int(dev_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "erro": "Aparelho inválido."}
+    ap = next((x for x in bt_dispositivos() if x["id"] == dev_id), None)
+    if not ap:
+        return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
+    indice = ap["perfis"].get(modo)
+    if indice is None:
+        return {"ok": False, "erro": f"{ap['nome']} não tem modo de "
+                                     f"{'chamada' if modo == 'chamada' else 'música'}."}
+    rc, _, err = _como_usuario(["wpctl", "set-profile", str(dev_id), str(indice)], 15)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não trocou o modo: {err[:120]}"}
+    time.sleep(2)   # o PipeWire refaz os nós do aparelho
+    return {"ok": True, "aviso": f"{ap['nome']} em modo de "
+            + ("chamada: o microfone aparece e o som fica pior." if modo == "chamada"
+               else "música: som melhor, sem microfone.")}
+
+
 def _no_valido(no_id):
     try:
         no_id = int(no_id)
@@ -327,20 +422,26 @@ def bt_testar_saida(no_id):
     no_id = _no_valido(no_id)
     if no_id is None:
         return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
-    rc, _, err = _como_usuario(["pw-cat", "--playback", "--target", str(no_id), "--format", "s16",
-                                "--rate", "48000", "--channels", "1", "-"], 12, _tom())
+    # --raw: sem isso o pw-cat tenta ler o stdin pela libsndfile e recusa
+    # ("Format not recognised"), porque mandamos amostras cruas
+    rc, _, err = _como_usuario(["pw-cat", "--playback", "--raw", "--target", str(no_id),
+                                "--format", "s16", "--rate", "48000", "--channels", "1", "-"],
+                               12, _tom())
     if rc != 0:
         return {"ok": False, "erro": f"Não tocou: {err[:120]}"}
-    return {"ok": True, "aviso": "Tocou um som de teste."}
+    return {"ok": True, "aviso": "Tocou o som de teste (4 notas) no aparelho. Ouviu?"}
 
 
 def bt_testar_entrada(no_id):
     no_id = _no_valido(no_id)
     if no_id is None:
         return {"ok": False, "erro": "Aparelho de áudio não encontrado."}
-    rc, dados, err = _como_usuario(["timeout", "3", "pw-cat", "--record", "--target", str(no_id),
-                                    "--format", "s16", "--rate", "16000", "--channels", "1", "-"], 10)
+    rc, dados, err = _como_usuario(["timeout", "3", "pw-cat", "--record", "--raw", "--target",
+                                    str(no_id), "--format", "s16", "--rate", "16000",
+                                    "--channels", "1", "-"], 10)
     if not dados:
         return {"ok": False, "erro": f"Não gravou: {err[:120]}"}
     pico = _pico(dados)
-    return {"ok": True, "aviso": f"Nível máximo do microfone em 3 s: {pico}%."}
+    return {"ok": True, "aviso": f"Nível máximo do microfone em 3 s: {pico}%"
+            + (" — está captando." if pico >= 5
+               else " — quase nada: fale perto ou confira o volume de entrada.")}

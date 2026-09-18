@@ -170,6 +170,7 @@ a.btn{{display:block;text-decoration:none;text-align:center}}
 .msg{{padding:10px;border-radius:8px;margin-top:12px;font-size:.9em}}
 .msg.ok{{background:rgba(52,211,153,.12);color:var(--ok)}}
 .msg.er{{background:rgba(248,113,113,.12);color:var(--er)}}
+.msg.av{{background:var(--av-bg);color:var(--av-tx);border:1px solid var(--av-br)}}
 .aviso{{background:var(--av-bg);border:1px solid var(--av-br);border-radius:8px;padding:10px;
  font-size:.85em;color:var(--av-tx);margin-top:12px}}
 .stats{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}}
@@ -1186,7 +1187,8 @@ def _cartao_pareamento(p):
     elif etapa == "digitar":
         corpo = f"<p>Digite <b style='font-size:1.4em'>{codigo}</b> no aparelho e aperte Enter.</p>"
     elif etapa == "ok":
-        corpo = msg("Pareado e conectado.")
+        corpo = (msg("Pareado. " + p["aviso"], "av") if p.get("aviso")
+                 else msg("Pareado e conectado."))
     elif etapa == "erro":
         corpo = msg(p.get("erro") or "Não pareou.", "er")
     else:
@@ -1216,7 +1218,8 @@ def tela_bluetooth(logado, r=None):
         if a["bateria"] is not None:
             detalhes.append(f"bateria {a['bateria']}%")
         if a["audio"] and a["pareado"]:
-            detalhes.append("áudio pela categoria Áudio")
+            detalhes.append("som ligado em Áudio" if aud.bt_ativo()
+                            else "o som só funciona com o áudio Bluetooth ligado (Áudio)")
         if a["pareado"]:
             acoes = (_form_bt("/bt-desconectar", "Desconectar", {"mac": a["mac"]}) if a["conectado"]
                      else _form_bt("/bt-conectar", "Conectar", {"mac": a["mac"]}))
@@ -1247,7 +1250,7 @@ def tela_bluetooth(logado, r=None):
           <div class='row'><input name='nome' value='{_e(est["nome"])}' maxlength='32' required>
           <button class='sec' style='margin-top:0;flex:0 0 auto;width:auto'>Salvar</button></div></form>
       </div>
-      {_cartao_pareamento(p)}
+      {_cartao_pareamento(p)}{_cartao_tarefa("audio-bt", r)}
       <div class='card'><h2>Meus aparelhos</h2>
         {"".join(linha(a) for a in pareados) or "<p>Nenhum aparelho pareado.</p>"}
       </div>
@@ -1399,8 +1402,24 @@ def tela_audio(logado, r=None):
                     + ("" if x["padrao"] else _form_audio("/audio-bt-ajustar", "Usar como padrão",
                                                           {"no": x["id"], "padrao": "1"}))
                     + "</div>")
+        def modo_bt(d):
+            """Fone em modo música não tem microfone; em modo chamada, tem (com som pior)."""
+            if len(d["perfis"]) < 2:
+                return ""
+            botoes = "".join(
+                f"<button type='submit' name='modo' value='{m}' class='{'atual' if d['modo'] == m else ''}'>"
+                f"{'🎵 Música' if m == 'musica' else '🎙️ Chamada'}</button>"
+                for m in ("musica", "chamada"))
+            dica = ("Som melhor, sem microfone." if d["modo"] == "musica"
+                    else "Microfone disponível, som pior.")
+            return (f"<form method='post' action='/audio-bt-modo' class='item'>"
+                    f"<input type='hidden' name='dev' value='{d['id']}'>"
+                    f"<span class='ic'>🔀</span><span class='tx'>Modo do {_e(d['nome'])}"
+                    f"<small>{dica}</small></span>"
+                    f"<span class='acoes'><span class='seg'>{botoes}</span></span></form>")
         lista_bt = ("".join(linha_bt(x, "saida") for x in ap["saidas"])
-                    + "".join(linha_bt(x, "entrada") for x in ap["entradas"])) \
+                    + "".join(linha_bt(x, "entrada") for x in ap["entradas"])
+                    + "".join(modo_bt(d) for d in aud.bt_dispositivos(ap["entradas"]))) \
             or "<p>Nenhum fone ou caixa conectado. Pareie e conecte em Dispositivos › Bluetooth.</p>"
         corpo_bt = f"""{lista_bt}
         {_form_audio("/audio-bt", "Desligar áudio Bluetooth", {"ligar": "0"})}"""
@@ -2112,6 +2131,13 @@ class Painel(BaseHTTPRequestHandler):
                     "/bt-esquecer": lambda: bt.esquecer(f.get("mac"))}
         if path in acoes_bt:
             r = acoes_bt[path]()
+            if r.get("instalar_audio"):
+                # fone/caixa sem o PipeWire no dongle: instala em segundo plano
+                # (minutos) e o cartão de tarefa acompanha na própria tela
+                t = sis.tarefa_iniciar("audio-bt")
+                return self._send(tela_bluetooth(True, {
+                    "ok": True, "aviso": r["erro"] + " " + (t.get("aviso") or t.get("erro", ""))
+                    + " Quando terminar, toque em Conectar."}))
             # tela nova (GET) depois da ação: recarregar não repete o POST, e a
             # mensagem de erro aparece; as de sucesso já estão no próprio estado
             return self._send(tela_bluetooth(True, r if not r["ok"] or path in
@@ -2147,6 +2173,8 @@ class Painel(BaseHTTPRequestHandler):
             return self._send(tela_audio(True, aud.bt_ajustar(
                 f.get("no"), None if mudo is not None or f.get("padrao") else f.get("volume"),
                 mudo, f.get("padrao") == "1")))
+        if path == "/audio-bt-modo":
+            return self._send(tela_audio(True, aud.bt_modo_set(f.get("dev"), f.get("modo"))))
         if path == "/audio-bt-testar":
             teste = aud.bt_testar_entrada if f.get("tipo") == "entrada" else aud.bt_testar_saida
             return self._send(tela_audio(True, teste(f.get("no"))))
