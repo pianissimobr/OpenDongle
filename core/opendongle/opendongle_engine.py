@@ -18,6 +18,7 @@ Sem dependências externas: só stdlib + nmcli (já presente no Debian
 do OpenStick). Retorna dicionários — a casca decide como exibir.
 """
 
+import base64
 import copy
 import glob
 import json
@@ -1220,7 +1221,9 @@ def modem_status():
     _, out, _ = _qmi(["--dms-get-ids"])
     imei = _campo(out, "IMEI")
 
+    mcc_mnc = _home_mccmnc()
     return {"ok": True, "presente": True, "sim_presente": sim_presente,
+            "mcc_mnc": mcc_mnc,
             "modo_operacao": modo_op, "registrado": registrado,
             "operadora": operadora, "rssi_dbm": rssi, "imei": imei}
 
@@ -1234,6 +1237,30 @@ def modem_reconectar():
     if rc != 0:
         return {"ok": False, "erro": f"Falha ao reiniciar: {err[:120]}"}
     return {"ok": True, "aviso": "Reconectando — pode levar alguns segundos."}
+
+
+def _home_mccmnc():
+    """Código MCC-MNC da operadora do SIM (ex.: '724-10'), via qmi. É a chave
+    do APN por operadora. Vazio se o SIM não responder."""
+    rc, out, _ = _qmi(["--nas-get-home-network"])
+    if rc != 0:
+        return ""
+    mcc = _campo(out, "MCC")
+    mnc = _campo(out, "MNC")
+    mcc = "".join(ch for ch in mcc if ch.isdigit())
+    mnc = "".join(ch for ch in mnc if ch.isdigit())
+    if len(mcc) == 3 and 2 <= len(mnc) <= 3:
+        return f"{mcc}-{mnc}"
+    return ""
+
+
+def modem_apn_auto(apn):
+    """APN pra operadora do SIM atual, sem a pessoa precisar saber o MCC-MNC."""
+    mcc_mnc = _home_mccmnc()
+    if not mcc_mnc:
+        return {"ok": False, "erro": "Não consegui identificar a operadora do "
+                "chip. Confira se o chip está inserido e reconhecido."}
+    return modem_set_apn(mcc_mnc, apn)
 
 
 def modem_set_apn(mcc_mnc, apn):
@@ -1453,6 +1480,68 @@ def cadastro_inicial(senha_root, nome, sobrenome, usuario, senha):
             "aviso": f"Cadastro concluído. Usuário {usuario}."}
 
 
+# --------------------------------------------------------------- FOTO DO PERFIL
+AVATAR = "/etc/opendongle/avatar"          # bytes crus; .tipo guarda o content-type
+MAX_AVATAR = 300 * 1024
+
+
+def avatar_set(dataurl):
+    """Salva a foto do administrador. Recebe um data URL (o front redimensiona
+    para 256x256 antes de enviar). Só PNG/JPEG, até 300 KB."""
+    try:
+        cab, _, b64 = (dataurl or "").partition(",")
+        if "base64" not in cab:
+            return {"ok": False, "erro": "Formato de imagem inválido."}
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:
+        return {"ok": False, "erro": "Imagem inválida."}
+    if len(raw) > MAX_AVATAR:
+        return {"ok": False, "erro": "Imagem muito grande (máx. 300 KB)."}
+    png = raw[:8] == b"\x89PNG\r\n\x1a\n"
+    jpg = raw[:3] == b"\xff\xd8\xff"
+    if not (png or jpg):
+        return {"ok": False, "erro": "Envie um arquivo PNG ou JPEG."}
+    try:
+        os.makedirs(os.path.dirname(AVATAR), mode=0o755, exist_ok=True)
+        tmp = AVATAR + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, AVATAR)
+        with open(AVATAR + ".tipo", "w") as f:
+            f.write("image/png" if png else "image/jpeg")
+    except OSError as e:
+        return {"ok": False, "erro": f"Não gravou a foto: {e}"}
+    return {"ok": True, "aviso": "Foto atualizada."}
+
+
+def avatar_rm():
+    for caminho in (AVATAR, AVATAR + ".tipo"):
+        try:
+            os.unlink(caminho)
+        except OSError:
+            pass
+    return {"ok": True, "aviso": "Foto removida."}
+
+
+def avatar_tem():
+    return os.path.exists(AVATAR)
+
+
+def avatar_bytes():
+    """(bytes, content-type) da foto, ou (None, None) se não houver."""
+    try:
+        with open(AVATAR, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None, None
+    try:
+        with open(AVATAR + ".tipo") as f:
+            tipo = f.read().strip() or "image/png"
+    except OSError:
+        tipo = "image/png"
+    return raw, tipo
+
+
 # --------------------------------------------------------------- dispatch
 # Usado pela CLI. A web importa as funções diretamente.
 ACOES = {
@@ -1469,6 +1558,11 @@ ACOES = {
     "restaurar": lambda a: restaurar(a.get("texto", "")),
     "reset": lambda a: reset(),
     "wifi-reconectar": lambda a: reconectar_wifi(),
+    "avatar-set": lambda a: avatar_set(a.get("foto", "")),
+    "avatar-rm": lambda a: avatar_rm(),
+    "modem-apn": lambda a: modem_apn_auto(a.get("apn", "")),
+    "modem-reconectar": lambda a: modem_reconectar(),
+    "list-wifi": lambda a: listar_wifi(),
     "wifi-conhecidas": lambda a: redes_conhecidas(),
     "wifi-esquecer": lambda a: esquecer_rede(a.get("ssid")),
     "wifi-auto": lambda a: wifi_auto(a.get("ativo"), a.get("todas"),

@@ -57,7 +57,7 @@ ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "opendongle_discovery.py", "opendongle_config.py",
         "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
         "opendongle_sistema.py", "opendongle_bluetooth.py", "opendongle_audio.py",
-        "opendongle_ajuda.py",
+        "opendongle_ajuda.py", "opendongle_api.py",
         "usb-role-autosense.sh"]
 
 # Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o
@@ -199,9 +199,12 @@ def main():
     # manda os 3 arquivos via tar por stdin (uma conexão)
     import tarfile, io
     buf = io.BytesIO()
+    dist = BASE.parent.parent / "painel" / "dist.tgz"
     with tarfile.open(fileobj=buf, mode="w") as t:
         for a in ARQS:
             t.add(BASE / a, arcname=a)
+        if dist.exists():          # bundle do painel novo (front React estático)
+            t.add(dist, arcname="painel-dist.tgz")
     # passa os BYTES via input= (BytesIO como stdin quebra: não tem fileno)
     r = subprocess.run(ssh + ["cat > /tmp/opendongle.tar"],
                        input=buf.getvalue())
@@ -222,6 +225,12 @@ def main():
         "mkdir -p /opt/opendongle && "
         "tar xf /tmp/opendongle.tar -C /opt/opendongle && "
         "rm /tmp/opendongle.tar && "
+        # painel novo (SPA): extrai o bundle; a existência da pasta é a flag
+        # que faz o opendongle_web.py servir o SPA em vez do HTML antigo
+        "if [ -f /opt/opendongle/painel-dist.tgz ]; then "
+        "rm -rf /opt/opendongle/painel && mkdir -p /opt/opendongle/painel && "
+        "tar xzf /opt/opendongle/painel-dist.tgz -C /opt/opendongle/painel && "
+        "rm /opt/opendongle/painel-dist.tgz; fi && "
         "chmod 755 /opt/opendongle/*.py /opt/opendongle/*.sh && "
         "cp /opt/opendongle/usb-role-autosense.sh /usr/local/bin/usb-role-autosense.sh && "
         "chmod 755 /usr/local/bin/usb-role-autosense.sh && "

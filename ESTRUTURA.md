@@ -12,7 +12,8 @@ python3 opendongle_completo.py
 - `instalar_opendongle.py` — instala o painel web + CLI + uplink_guard
 - `setup_estrutura.py` — baixa firmware e loader
 - `install.sh` — dependências do PC
-- `opendongle/` — o painel (engine, config, apply, cli, web, uplink_guard, led, diag, discovery, opendongled, usb-role-autosense.sh)
+- `opendongle/` — o painel: motor (engine), config, apply, cli, web, **api** (JSON pro painel novo), uplink_guard, led, diag, discovery, opendongled, usb-role-autosense.sh
+- `painel/` — front-end do painel novo (Next.js/React, exportado estático). O `dist.tgz` versionado é o bundle que o instalador embarca em `/opt/opendongle/painel`; sem ele, o painel cai no HTML server-side antigo. Ver `painel/README.md`.
 
 ## ferramentas/ — utilitários situacionais
 - `restaurar_backup.py` — volta o dongle ao firmware salvo

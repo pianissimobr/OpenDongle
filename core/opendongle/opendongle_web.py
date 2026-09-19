@@ -41,6 +41,18 @@ import opendongle_audio as aud
 import opendongle_bluetooth as bt
 import opendongle_engine as eng
 import opendongle_sistema as sis
+import opendongle_api as api
+
+# Painel novo (bundle React estático exportado do Next). Quando a pasta existe,
+# o dongle serve o SPA + a API JSON; sem ela, cai no painel server-side antigo.
+# Assim o deploy do bundle liga o novo, e removê-lo reverte na hora.
+PAINEL_DIR = os.environ.get("OPENDONGLE_PAINEL", "/opt/opendongle/painel")
+PAINEL_SPA = os.path.isdir(PAINEL_DIR)
+_TIPOS = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+          ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
+          ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
+          ".ico": "image/x-icon", ".woff2": "font/woff2", ".woff": "font/woff",
+          ".txt": "text/plain; charset=utf-8", ".map": "application/json"}
 
 # O painel dorme quando ocioso (processo encerra): nada de estado só em
 # memória. Sessão = cookie assinado; diagnóstico = arquivo em /run (tmpfs).
@@ -1972,13 +1984,63 @@ class Painel(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corpo)
 
-    def _send_json(self, dados, code=200):
+    def _send_json(self, dados, code=200, extra=None):
         corpo = json.dumps(dados, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(corpo)
+
+    def _servir_arquivo(self, caminho):
+        """Serve um arquivo do bundle. Assets do Next (/_next/) levam hash no
+        nome, então podem ser cacheados pra sempre; o resto é no-store."""
+        try:
+            with open(caminho, "rb") as f:
+                corpo = f.read()
+        except OSError:
+            return False
+        ext = os.path.splitext(caminho)[1].lower()
+        cache = ("public, max-age=31536000, immutable"
+                 if "/_next/" in caminho.replace(os.sep, "/") else "no-store")
+        self.send_response(200)
+        self.send_header("Content-Type", _TIPOS.get(ext, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(corpo)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(corpo)
+        return True
+
+    def _servir_bundle(self, path):
+        """Mapeia a URL para um arquivo do bundle. Devolve False se não houver
+        arquivo (o chamador decide o fallback). Barra o path traversal."""
+        rel = urllib.parse.unquote(path).lstrip("/")
+        base = os.path.realpath(PAINEL_DIR)
+        alvo = os.path.realpath(os.path.join(base, rel))
+        if alvo != base and not alvo.startswith(base + os.sep):
+            return False                      # tentou sair da pasta do bundle
+        if os.path.isdir(alvo):
+            alvo = os.path.join(alvo, "index.html")
+        if os.path.isfile(alvo):
+            return self._servir_arquivo(alvo)
+        # rota do SPA sem arquivo próprio (ex. /bluetooth sem trailing): tenta a
+        # versão com /index.html que o export com trailingSlash gera
+        idx = os.path.join(base, rel.rstrip("/"), "index.html")
+        if os.path.isfile(idx):
+            return self._servir_arquivo(idx)
+        return False
+
+    def _api_json(self, fn):
+        """Endpoint de leitura da API: exige sessão, devolve JSON, nunca 500."""
+        if not self._logado():
+            return self._send_json({"erro": "login"}, 401)
+        try:
+            return self._send_json(fn())
+        except Exception as e:
+            return self._send_json({"erro": str(e)}, 500)
 
     def _redir(self, dest, cookie=None):
         self.send_response(302)
@@ -2025,9 +2087,46 @@ class Painel(BaseHTTPRequestHandler):
         if host not in ("opendongle.local", "opendongle") and not _eh_ip(host):
             return self._redir(f"http://{ip}/")
         self._contexto(path)
-        if cadastro_pendente():
+        if cadastro_pendente() and not PAINEL_SPA:
             _CTX.categoria = None
             return self._send(tela_cadastro())
+        if PAINEL_SPA:
+            if path == "/api/contexto":
+                return self._send_json({"primeiroUso": cadastro_pendente(),
+                                        "logado": self._logado()})
+            if path == "/api/avatar":
+                if not self._logado():
+                    return self._send_json({"erro": "login"}, 401)
+                raw, tipo = eng.avatar_bytes()
+                if not raw:
+                    return self._send_json({"erro": "sem foto"}, 404)
+                self.send_response(200)
+                self.send_header("Content-Type", tipo)
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(raw)
+                return
+            # API de leitura (o SPA busca os dados daqui)
+            if path == "/api/tudo":
+                return self._api_json(lambda: api.tudo(cadastro_pendente()))
+            if path == "/api/saude":
+                return self._api_json(api.saude)
+            if path == "/api/estado":
+                return self._api_json(lambda: api.estado(cadastro_pendente()))
+            if path == "/api/dados":
+                return self._api_json(api.dados)
+            if path == "/api/wifi-scan":
+                return self._api_json(api.wifi_scan)
+            if not path.startswith("/api/"):
+                if self._servir_bundle(path):
+                    return
+                # rota do SPA sem arquivo próprio: entrega o index e o cliente
+                # roteia. Sem sessão, o próprio SPA cai em /login (recebe 401).
+                idx = os.path.join(PAINEL_DIR, "index.html")
+                if os.path.isfile(idx):
+                    return self._servir_arquivo(idx)
         publicas = {"/": tela_inicio, "/status": tela_status, "/wifi": tela_wifi,
                     "/geral": tela_geral, "/internet": tela_internet,
                     "/dispositivos": tela_dispositivos, "/confirmar": tela_confirmar,
@@ -2084,11 +2183,92 @@ class Painel(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corpo)
 
+    def _api_cadastro(self):
+        """Cadastro de primeiro uso, do SPA. Só funciona enquanto a senha for a
+        de fábrica (cadastro_pendente). Aplica tudo, guarda a foto (opcional) e
+        já entra logado (seta o cookie)."""
+        if not cadastro_pendente():
+            return self._send_json({"ok": False, "erro": "O cadastro já foi feito."}, 403)
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            d = json.loads(self.rfile.read(n).decode() or "{}")
+        except (ValueError, OSError):
+            return self._send_json({"ok": False, "erro": "Pedido inválido."}, 400)
+        if d.get("senha", "") != d.get("confirmacao", ""):
+            return self._send_json({"ok": False, "etapa": 3,
+                                    "erro": "As duas senhas não são iguais."})
+        r = eng.cadastro_inicial(d.get("senhaRoot", ""), d.get("nome", ""),
+                                 d.get("sobrenome", ""), d.get("usuario", ""),
+                                 d.get("senha", ""))
+        if not r.get("ok"):
+            return self._send_json(r)
+        if d.get("foto"):
+            eng.avatar_set(d["foto"])          # falha na foto não desfaz o cadastro
+        return self._send_json(r, extra={"Set-Cookie": _cookie_sessao()})
+
+    def _api_login(self):
+        """Login do SPA: JSON {senha, voltar}. Confere contra /etc/shadow (a
+        mesma senha do sistema) e devolve a sessão no cookie. Reaproveita
+        _checa_admin e _cookie_sessao do painel antigo."""
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            corpo = json.loads(self.rfile.read(n).decode() or "{}")
+        except (ValueError, OSError):
+            return self._send_json({"ok": False, "erro": "Pedido inválido."}, 400)
+        voltar = corpo.get("voltar", "/")
+        if not voltar.startswith("/") or voltar.startswith("//"):
+            voltar = "/"                      # só caminho local, nada externo
+        if _checa_admin(corpo.get("senha", "")):
+            return self._send_json({"ok": True, "voltar": voltar}, 200,
+                                   extra={"Set-Cookie": _cookie_sessao()})
+        time.sleep(1)                          # atrasa tentativa por força bruta
+        return self._send_json({"ok": False, "erro": "Senha incorreta."}, 200)
+
+    def _api_acao(self):
+        """Ação (POST) vinda do SPA: JSON {acao, args}. Exige sessão. Dispara
+        no motor (eng.executar) e devolve o resultado como veio."""
+        if not self._logado():
+            return self._send_json({"ok": False, "erro": "login"}, 401)
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            corpo = json.loads(self.rfile.read(n).decode() or "{}")
+            acao = corpo.get("acao", "")
+            args = corpo.get("args") or {}
+        except (ValueError, OSError) as e:
+            return self._send_json({"ok": False, "erro": f"pedido inválido: {e}"}, 400)
+        # senha e nome de usuário revalidam a senha atual (não só a sessão)
+        if acao == "set-password":
+            if not _checa_admin(args.get("atual", "")):
+                time.sleep(1)
+                return self._send_json({"ok": False, "erro": "Senha atual incorreta."})
+            if args.get("nova", "") != args.get("confirmacao", ""):
+                return self._send_json({"ok": False, "erro": "As duas senhas não são iguais."})
+            r = eng.set_password(args.get("nova", ""))
+            if r.get("ok") and args.get("encerrar"):
+                _chave(renovar=True)   # derruba o painel nos outros aparelhos
+                return self._send_json(r, extra={"Set-Cookie": _cookie_sessao()})
+            return self._send_json(r)
+        if acao == "usuario-renomear":
+            if not _checa_admin(args.get("atual", "")):
+                time.sleep(1)
+                return self._send_json({"ok": False, "erro": "Senha atual incorreta."})
+            return self._send_json(eng.renomear_usuario(args.get("novo", "")))
+        try:
+            return self._send_json(api.acao(acao, args))
+        except Exception as e:
+            return self._send_json({"ok": False, "erro": str(e)}, 500)
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        if PAINEL_SPA and path == "/api/cadastro":
+            return self._api_cadastro()
+        if PAINEL_SPA and path == "/api/login":
+            return self._api_login()
+        if PAINEL_SPA and path == "/api/acao":
+            return self._api_acao()
         f = self._form()
         self._contexto(path)
-        if cadastro_pendente():
+        if cadastro_pendente() and not PAINEL_SPA:
             _CTX.categoria = None
             if path != "/cadastro":
                 return self._redir("/")
