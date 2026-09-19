@@ -24,6 +24,7 @@ import hmac
 import html
 import ipaddress
 import json
+import gzip
 import os
 import secrets
 import socket
@@ -2005,10 +2006,21 @@ class Painel(BaseHTTPRequestHandler):
         ext = os.path.splitext(caminho)[1].lower()
         cache = ("public, max-age=31536000, immutable"
                  if "/_next/" in caminho.replace(os.sep, "/") else "no-store")
+        # gzip nos arquivos de texto (JS/CSS/HTML/SVG…): a 1ª carga do painel
+        # cai de ~660 KB pra ~200 KB. Comprime na hora, sem cache em RAM — só
+        # acontece quando um navegador novo baixa (depois o cache immutable
+        # cobre). O ganho é grande e o custo de CPU é raro e pontual.
+        aceita_gzip = "gzip" in self.headers.get("Accept-Encoding", "")
+        comprimivel = ext in (".js", ".css", ".html", ".svg", ".json", ".map", ".txt")
+        cabecalhos = [("Content-Type", _TIPOS.get(ext, "application/octet-stream")),
+                      ("Cache-Control", cache), ("Vary", "Accept-Encoding")]
+        if aceita_gzip and comprimivel and len(corpo) > 512:
+            corpo = gzip.compress(corpo, 6)
+            cabecalhos.append(("Content-Encoding", "gzip"))
         self.send_response(200)
-        self.send_header("Content-Type", _TIPOS.get(ext, "application/octet-stream"))
+        for k, v in cabecalhos:
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(corpo)))
-        self.send_header("Cache-Control", cache)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(corpo)
