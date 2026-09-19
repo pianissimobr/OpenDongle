@@ -2131,6 +2131,22 @@ class Painel(BaseHTTPRequestHandler):
                 return self._api_json(api.dados)
             if path == "/api/wifi-scan":
                 return self._api_json(api.wifi_scan)
+            if path == "/api/status":
+                return self._api_json(lambda: {"saude": eng.saude_sistema(),
+                                               "estado": api.estado(cadastro_pendente())})
+            if path == "/api/desempenho":
+                return self._api_json(sis.desempenho)
+            if path == "/api/espaco":
+                return self._api_json(sis.espaco_status)
+            if path == "/api/hardware":
+                return self._api_json(sis.hardware)
+            if path == "/api/recursos":
+                return self._api_json(eng.recursos)
+            if path == "/api/kernel":
+                return self._api_json(sis.kernel)
+            if path == "/api/logs":
+                u = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("u", [""])[0]
+                return self._api_json(lambda: eng.logs(u))
             if not path.startswith("/api/"):
                 if self._servir_bundle(path):
                     return

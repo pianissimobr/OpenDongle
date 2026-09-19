@@ -274,6 +274,9 @@ _ACOES = {
     "sistema-set": lambda a: eng.sistema_set(a.get("hostname", "")),
     "servico-set": lambda a: sis.servico_set(a["nome"], bool(a.get("ligar"))),
     "energia": lambda a: sis.energia(a["acao"]),
+    "processo-encerrar": lambda a: sis.encerrar_processo(a["pid"]),
+    "espaco-analisar": lambda a: sis.espaco_analisar(),
+    "espaco-liberar": lambda a: sis.espaco_liberar(),
     "atualizacoes": lambda a: sis.atualizacoes_iniciar(bool(a.get("instalar"))),
     "sessao-encerrar": lambda a: sis.encerrar_sessao(a["id"]),
     # --- USB ---

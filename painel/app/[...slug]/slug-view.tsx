@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Activity, AudioLines, CalendarClock, Check, CircleHelp, Cpu, Database,
   FileJson, HardDrive, KeyRound, Lightbulb, ListTree, LockKeyhole,
@@ -10,7 +10,7 @@ import {
   Wrench, Zap, Bluetooth, Usb, Volume2, Radio, Clock3, Download,
 } from "lucide-react"
 import { Card, CardTitle, Field, Input, Select, Textarea, Btn, Notice, Pill, Row, RowGroup, Stat, MiniBar, Toggle, Segmented, PageHeader } from "@/components/panel/ui"
-import { usePanel, PERFIL } from "@/lib/panel/store"
+import { usePanel, PERFIL, apiGet } from "@/lib/panel/store"
 import { AvatarEditor } from "@/components/panel/avatar"
 import { cn } from "@/lib/utils"
 
@@ -160,6 +160,121 @@ function AtualizacoesPage() {
   return <div className="space-y-6"><PageHeader icon={Download} title="Atualizações" desc="Correções e melhorias do sistema."><GoBack /></PageHeader><Card><CardTitle>Sistema</CardTitle><p className="text-sm text-muted-foreground">Verifique e instale atualizações do Debian. Precisa de internet.</p><div className="mt-4 flex gap-2"><Btn variant="secondary" onClick={() => processar({ mensagem: "Procurando atualizações", duracao: 25000, acao: "atualizacoes", args: { instalar: false } })}><RefreshCw className="size-4" /> Verificar</Btn><Btn variant="primary" onClick={() => processar({ mensagem: "Instalando atualizações", duracao: 120000, acao: "atualizacoes", args: { instalar: true } })}><Download className="size-4" /> Instalar</Btn></div></Card></div>
 }
 
+function useApi<T>(rota: string, intervalo = 0) {
+  const [dados, setDados] = useState<T | null>(null)
+  const [carregando, setCarregando] = useState(true)
+  useEffect(() => {
+    let vivo = true
+    const puxar = async () => { const d = await apiGet<T>(rota); if (vivo) { setDados(d); setCarregando(false) } }
+    puxar()
+    if (intervalo) {
+      const id = setInterval(() => { if (!document.hidden) puxar() }, intervalo)
+      return () => { vivo = false; clearInterval(id) }
+    }
+    return () => { vivo = false }
+  }, [rota, intervalo])
+  return { dados, carregando }
+}
+
+function StatusPage() {
+  const { dados } = useApi<{ saude: any; estado: any }>("/api/status", 5000)
+  const sa = dados?.saude, st = dados?.estado
+  const ramPct = sa?.ram ? Math.round(100 - sa.ram.disponivel_kb * 100 / (sa.ram.total_kb || 1)) : 0
+  return <div className="space-y-6"><PageHeader icon={Activity} title="Status e saúde" desc="Como está o dongle agora."><GoBack /></PageHeader>
+    {!dados ? <Card><p className="text-sm text-muted-foreground">Carregando…</p></Card> : <>
+    <Card><div className="flex flex-wrap items-center gap-3"><Pill tone={st?.internet ? "ok" : "warn"}>{st?.internet ? "conectado à internet" : "sem internet"}</Pill><span className="text-sm text-muted-foreground">{st?.modo === "wifi" ? `Wi-Fi · ${st?.endereco?.ssid ?? ""}` : st?.modo === "hotspot" ? `Hotspot · ${st?.ssidHotspot ?? ""}` : "—"}</span></div>{st?.endereco && <p className="mt-3 text-sm">Endereço nesta rede: <b>{st.endereco.ip}</b>{!st.endereco.agora && " (último visto)"}</p>}</Card>
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <Stat label="CPU (1 min)" value={sa?.cpu ? `${sa.cpu.carga_1m?.toFixed?.(2) ?? sa.cpu.carga_1m}` : "—"} />
+      <Stat label="RAM usada" value={`${ramPct}%`} tone={ramPct > 85 ? "err" : ramPct > 70 ? "warn" : ""} bar={ramPct} />
+      <Stat label="Disco" value={`${sa?.disco_raiz?.usado_pct ?? 0}%`} bar={sa?.disco_raiz?.usado_pct ?? 0} />
+      <Stat label="Temperatura" value={sa?.temp_cpu_c != null ? `${Math.round(sa.temp_cpu_c)}°` : "—"} tone={sa?.temp_cpu_c > 70 ? "err" : sa?.temp_cpu_c > 60 ? "warn" : ""} />
+    </div>
+    <Card><CardTitle>Detalhes</CardTitle><RowGroup cols={2}>
+      <Row title="Memória" sub={sa?.ram ? `${Math.round(sa.ram.disponivel_kb/1024)} MB livres de ${Math.round(sa.ram.total_kb/1024)} MB` : "—"} />
+      <Row title="Disco raiz" sub={sa?.disco_raiz ? `${sa.disco_raiz.usado_gb} GB de ${sa.disco_raiz.total_gb} GB` : "—"} />
+      <Row title="Ligado há" sub={sa?.uptime_s != null ? `${Math.floor(sa.uptime_s/3600)}h ${Math.floor(sa.uptime_s%3600/60)}min` : "—"} />
+      <Row title="Núcleos" sub={sa?.cpu?.nucleos ?? "—"} />
+    </RowGroup>{sa?.temperaturas_c && <div className="mt-3 text-xs text-muted-foreground">{Object.entries(sa.temperaturas_c).map(([k,v]) => `${k}: ${v}°`).join(" · ")}</div>}</Card>
+    <RebootCard />
+    </>}
+  </div>
+}
+
+function DesempenhoPage() {
+  const { dados } = useApi<any>("/api/desempenho", 2500)
+  const { processar } = usePanel()
+  if (!dados?.ok) return <div className="space-y-6"><PageHeader icon={Cpu} title="Desempenho" desc="CPU, memória e processos ao vivo."><GoBack /></PageHeader><Card><p className="text-sm text-muted-foreground">{dados ? "Não foi possível ler o desempenho." : "Carregando…"}</p></Card></div>
+  return <div className="space-y-6"><PageHeader icon={Cpu} title="Desempenho" desc="CPU, memória e processos — atualiza sozinho."><GoBack /></PageHeader>
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <Stat label="Carga (1 min)" value={`${dados.carga?.[0] ?? "—"}`} />
+      <Stat label="RAM livre" value={`${dados.ram?.disponivel_mb ?? "—"} MB`} bar={dados.ram ? Math.round(100 - dados.ram.disponivel_mb*100/(dados.ram.total_mb||1)) : 0} />
+      <Stat label="Swap (zram)" value={`${dados.swap?.usado_mb ?? 0} MB`} />
+      <Stat label="Núcleos" value={`${dados.nucleos ?? "—"}`} />
+    </div>
+    <Card><CardTitle>Processos que mais usam</CardTitle><RowGroup>{(dados.processos || []).slice(0,8).map((p: any) => <Row key={p.pid} title={p.nome} sub={`PID ${p.pid} · CPU ${p.cpu}% · ${p.ram_mb} MB`} action={p.protegido ? <Pill tone="neutral">protegido</Pill> : <Btn size="sm" variant="ghost" onClick={() => processar({ mensagem: "Encerrando " + p.nome, duracao: 2000, acao: "processo-encerrar", args: { pid: p.pid } })}>Encerrar</Btn>} />)}</RowGroup></Card>
+  </div>
+}
+
+function EspacoPage() {
+  const { dados, carregando } = useApi<any>("/api/espaco")
+  const { processar } = usePanel()
+  const lib = dados?.liberavel
+  const totalLib = lib ? (lib.cache_apt_mb + lib.logs_antigos_mb + lib.journal_mb) : 0
+  return <div className="space-y-6"><PageHeader icon={HardDrive} title="Espaço em disco" desc="O que ocupa o armazenamento e como liberar."><GoBack /></PageHeader>
+    {carregando ? <Card><p className="text-sm text-muted-foreground">Carregando…</p></Card> : <>
+    <Card><CardTitle>Discos</CardTitle><RowGroup>{(dados?.discos || []).map((d: any) => <Row key={d.ponto} title={d.nome} sub={`${d.ponto} · ${Math.round((d.total_mb-d.livre_mb)/1024*10)/10} GB de ${Math.round(d.total_mb/1024*10)/10} GB`} action={<div className="w-28"><MiniBar value={d.usado_pct} tone={d.usado_pct > 90 ? "err" : d.usado_pct > 75 ? "warn" : "ok"} /></div>} />)}</RowGroup></Card>
+    <Card><CardTitle hint={`${totalLib} MB`}>Liberar espaço</CardTitle><p className="text-sm text-muted-foreground">Cache do APT: {lib?.cache_apt_mb ?? 0} MB · logs antigos: {lib?.logs_antigos_mb ?? 0} MB · journal: {lib?.journal_mb ?? 0} MB</p><div className="mt-4 flex gap-2"><Btn size="sm" variant="secondary" onClick={() => processar({ mensagem: "Analisando o disco", duracao: 8000, acao: "espaco-analisar" })}>Analisar</Btn><Btn size="sm" variant="primary" disabled={!totalLib} onClick={() => processar({ mensagem: "Liberando espaço", duracao: 10000, acao: "espaco-liberar" })}>Liberar {totalLib} MB</Btn></div></Card>
+    </>}
+  </div>
+}
+
+function HardwarePage() {
+  const { dados, carregando } = useApi<any>("/api/hardware")
+  const h = dados
+  return <div className="space-y-6"><PageHeader icon={Router} title="Hardware" desc="Identificação real dos componentes do dongle."><GoBack /></PageHeader>
+    {carregando ? <Card><p className="text-sm text-muted-foreground">Carregando…</p></Card> : !h?.ok ? <Card><p className="text-sm text-muted-foreground">Não foi possível ler o hardware.</p></Card> : <>
+    <Card><CardTitle>{h.placa}{h.compativel === false && " (não homologada)"}</CardTitle><RowGroup cols={2}>
+      <Row icon={Cpu} title="Processador" sub={`${h.soc} · ${h.cpu}`} />
+      <Row icon={Cpu} title="Núcleos" sub={`${h.nucleos} × ${h.mhz} MHz · ${h.governor}`} />
+      <Row icon={MemoryStick} title="Memória" sub={`${h.ram_mb} MB`} />
+      <Row icon={HardDrive} title="eMMC" sub={h.emmc ? `${h.emmc.modelo} · ${h.emmc.tamanho_gb} GB · desgaste ${h.emmc.desgaste}` : "—"} />
+      <Row icon={Wifi} title="Wi-Fi" sub={h.wifi ? `${h.wifi.driver} · ${h.wifi.mac}` : "—"} />
+      <Row icon={Bluetooth} title="Bluetooth" sub={h.bluetooth_mac || "—"} />
+      <Row icon={Radio} title="Modem 4G" sub={h.modem ? `${h.modem.firmware || ""} ${h.modem.imei ? "· IMEI " + h.modem.imei : ""}` : "—"} />
+      <Row icon={Usb} title="MAC USB" sub={h.usb_mac || "—"} />
+    </RowGroup></Card>
+    <Card><CardTitle>Sistema</CardTitle><RowGroup cols={2}>
+      <Row title="Kernel" sub={h.kernel} />
+      <Row title="Sistema" sub={h.sistema} />
+      <Row title="Ligado há" sub={h.ligado_ha} />
+    </RowGroup></Card>
+    </>}
+  </div>
+}
+
+function RebootCard() {
+  const [fase, setFase] = useState<"" | "reiniciando" | "desligando">("")
+  const energia = async (acao: "reboot" | "poweroff") => {
+    const txt = acao === "reboot" ? "reiniciando" : "desligando"
+    if (!confirm(acao === "reboot" ? "Reiniciar o dongle agora?" : "Desligar o dongle? Para ligar de novo, tire e recoloque na tomada.")) return
+    setFase(txt)
+    try { await fetch("/api/acao", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ acao: "energia", args: { acao } }) }) } catch {}
+    if (acao === "reboot") {
+      // espera o dongle voltar e recarrega sozinho — sem página de erro
+      const t0 = Date.now()
+      const tenta = async () => {
+        if (Date.now() - t0 > 180000) { window.location.href = "/"; return }
+        try { const r = await fetch("/api/contexto", { cache: "no-store" }); if (r.ok) { window.location.href = "/"; return } } catch {}
+        setTimeout(tenta, 3000)
+      }
+      setTimeout(tenta, 15000)
+    }
+  }
+  return <><Card><CardTitle>Energia</CardTitle><div className="flex gap-2"><Btn size="sm" variant="secondary" onClick={() => energia("reboot")}><RefreshCw className="size-4" /> Reiniciar</Btn><Btn size="sm" variant="danger" onClick={() => energia("poweroff")}><Zap className="size-4" /> Desligar</Btn></div></Card>
+    {fase && <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 px-6 text-center"><div className="max-w-sm space-y-4"><RefreshCw className="mx-auto size-8 animate-spin text-brand" /><h2 className="text-lg font-semibold">{fase === "reiniciando" ? "Reiniciando o dongle…" : "Desligando o dongle…"}</h2><p className="text-sm text-muted-foreground">{fase === "reiniciando" ? "Isso leva cerca de 40 segundos. Esta página volta sozinha quando o dongle estiver pronto — não feche." : "Pode tirar da tomada quando as luzes apagarem. Para ligar de novo, recoloque na tomada."}</p></div></div>}
+  </>
+}
+
 export function SlugView({ slug }: { slug: string }) {
   if (slug in groups) return <ListPage group={slug as keyof typeof groups} />
   if (slug === "perfil") return <Perfil />
@@ -172,6 +287,10 @@ export function SlugView({ slug }: { slug: string }) {
   if (slug === "firewall") return <FirewallPage />
   if (slug === "hora") return <HoraPage />
   if (slug === "atualizacoes") return <AtualizacoesPage />
+  if (slug === "status") return <StatusPage />
+  if (slug === "desempenho") return <DesempenhoPage />
+  if (slug === "espaco") return <EspacoPage />
+  if (slug === "hardware") return <HardwarePage />
   if (["logs", "diagnostico", "kernel", "recursos", "servicos", "config-arquivo"].includes(slug)) return <AdvancedLeaf slug={slug} />
   return <DataPage slug={slug || "sistema"} />
 }

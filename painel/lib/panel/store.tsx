@@ -418,7 +418,7 @@ type ApiTudo = {
   perfil: { nome: string; usuario: string; admin: boolean }
 }
 
-async function apiGet<T>(rota: string): Promise<T | null> {
+export async function apiGet<T>(rota: string): Promise<T | null> {
   try {
     const r = await fetch(rota, { cache: "no-store", credentials: "same-origin" })
     if (r.status === 401) {
