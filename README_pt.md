@@ -2,7 +2,7 @@
 
 [English](README.md) · **Português**
 
-**OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
+**OpenDongle** foi escrito para transformar modems 4G USB baseados no chip Qualcomm MSM8916 (os "dongles") e os transforma, de forma automatizada, em pequenos computadores Linux do tamanho de um pendrive — que gastam ~2W.
 
 <p align="center">
   <img src="docs/opendongle-painel.png" alt="Painel do OpenDongle" width="49%">
@@ -67,15 +67,17 @@ python3 setup_estrutura.py
 python3 opendongle_completo.py
 ```
 
-O assistente pergunta se o Debian já está instalado, conduz a instalação, otimiza, instala o painel e configura o acesso USB. Ao final, o dongle sobe uma rede Wi-Fi chamada **OpenDongle** (senha `opendongle`) e responde em **opendongle.local**.
+O assistente pergunta se o Debian já está instalado, conduz a instalação, otimiza, instala o painel e configura o acesso USB. Ao final, o dongle sobe uma rede Wi-Fi chamada **OpenDongle** (senha `opendongle`).
 
 **3. Use.** Conecte no Wi-Fi do dongle, abra `opendongle.local`, e escolha o que ele vai ser.
+
+## Possíveis erros
 
 > **`opendongle.local` não abre?** Em alguns Windows o mDNS falha. Rode `python3 ferramentas/opendongle_localizar.py` no PC — ele acha o IP do dongle na rede local sozinho e já abre o painel, sem precisar de USB nem entrar no roteador.
 
 > **Não sabe o endereço que o dongle pegou no Wi-Fi de casa?** O painel mostra em **Geral › Status e saúde** — o endereço atual e também o último em que ele esteve. Pelo cabo USB (`192.168.100.1`) dá pra descobrir onde ele estava. No roteador ele aparece como **opendongle**, sempre no mesmo endereço.
 
-> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Quem prefere que ele entre sozinho liga a **conexão automática** e escolhe quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
+> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Pode automatizar para que ele entre sozinho: ligue a **conexão automática** e escolha quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
 
 ---
 

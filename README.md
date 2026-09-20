@@ -2,7 +2,7 @@
 
 **English** · [Português](README_pt.md)
 
-**OpenDongle** takes those cheap MSM8916-based 4G USB modems (the "dongles" that end up as e-waste in a drawer) and turns them, automatically, into full Linux computers the size of a flash drive — drawing ~2 W and running all year long.
+**OpenDongle** was written to turn MSM8916-based 4G USB modems (the "dongles") into small Linux computers the size of a flash drive, automatically — drawing ~2 W.
 
 <p align="center">
   <img src="docs/opendongle-painel.png" alt="OpenDongle panel" width="49%">
@@ -67,15 +67,17 @@ python3 setup_estrutura.py
 python3 opendongle_completo.py
 ```
 
-The wizard asks whether Debian is already installed, runs the install, optimizes, installs the panel and sets up USB access. At the end, the dongle raises a Wi-Fi network called **OpenDongle** (password `opendongle`) and answers at **opendongle.local**.
+The wizard asks whether Debian is already installed, runs the install, optimizes, installs the panel and sets up USB access. At the end, the dongle raises a Wi-Fi network called **OpenDongle** (password `opendongle`).
 
 **3. Use it.** Connect to the dongle's Wi-Fi, open `opendongle.local`, and choose what it will be.
+
+## Possible problems
 
 > **`opendongle.local` won't open?** On some Windows setups mDNS fails. Run `python3 ferramentas/opendongle_localizar.py` on the PC — it finds the dongle's IP on the local network by itself and opens the panel, with no USB and no need to log into the router.
 
 > **Don't know the address the dongle got on the home Wi-Fi?** The panel shows it under **General › Status and health** — the current address and also the last one it had. Over the USB cable (`192.168.100.1`) you can find out where it was. On the router it shows up as **opendongle**, always at the same address.
 
-> **Lost the dongle on the network?** Unplug it and power it back on: every boot starts as a **hotspot**, even if it already knows the home network. The network stays saved and comes back with one tap on *Reconnect*. If you'd rather it join on its own, turn on **auto-connect** and pick which known networks count — and even then, if none is nearby, it falls back to a hotspot.
+> **Lost the dongle on the network?** Unplug it and power it back on: every boot starts as a **hotspot**, even if it already knows the home network. The network stays saved and comes back with one tap on *Reconnect*. You can automate it so it joins on its own: turn on **auto-connect** and pick which known networks count — and even then, if none is nearby, it falls back to a hotspot.
 
 ---
 
