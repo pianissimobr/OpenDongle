@@ -1,169 +1,138 @@
 # 🔌 OpenDongle
 
-**OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
+**English** · [Português](README_pt.md)
+
+**OpenDongle** takes those cheap MSM8916-based 4G USB modems (the "dongles" that end up as e-waste in a drawer) and turns them, automatically, into full Linux computers the size of a flash drive — drawing ~2 W and running all year long.
 
 ---
 
-## 💡 Por que isso existe
+## 💡 Why this exists
 
-Todo ano, o mundo descarta dezenas de milhões de toneladas de eletrônicos. Boa parte disso não é lixo de verdade — é tecnologia perfeitamente funcional que foi declarada "obsoleta" por quem a fabricou. Um modem 4G que a operadora aposentou ainda é um computador quad-core com Linux rodando dentro. A indústria fecha, esconde e descarta; este projeto abre, documenta e ressuscita.
+Every year the world throws away tens of millions of tonnes of electronics. Much of it isn't really trash — it's perfectly working technology declared "obsolete" by whoever made it. A 4G modem a carrier retired is still a quad-core computer with Linux running inside. The industry closes, hides and discards; this project opens, documents and revives.
 
-A ideia central: **não faz sentido manter em cárcere uma tecnologia obsoleta.** Esses aparelhos podem virar bloqueadores de anúncios para a casa toda, VPNs pessoais, servidores de arquivos, cofres de senhas — infraestrutura útil e barata, feita de algo que iria para o aterro.
+The core idea: **it makes no sense to keep a piece of technology imprisoned just because it was labeled obsolete.** These devices can become whole-home ad blockers, personal VPNs, file servers, password vaults — useful, cheap infrastructure made from something headed for the landfill.
 
-Este repositório é a **ponte** entre o excelente trabalho técnico da comunidade (que fez o Linux rodar nesses chips) e a pessoa comum que quer plugar e usar.
-
----
-
-## 🙏 Créditos e base
-
-O OpenDongle **não reinventa a roda** — ele automatiza e empacota, com muita documentação de campo, o trabalho de quem veio antes:
-
-- **[OpenStick-Builder](https://github.com/LongQT-sea/OpenStick-Builder)** (por LongQT-sea) — a imagem Debian para MSM8916 que o OpenDongle instala. É o coração de tudo. Licença MIT.
-- **[postmarketOS](https://postmarketos.org/)** — o trabalho de porting que tornou o Linux possível nesses chips.
-- **[edl](https://github.com/bkerler/edl)** (por bkerler) — a ferramenta de comunicação com o modo Qualcomm EDL.
-
-O OpenDongle é a camada de automação **por cima** dessas ferramentas, com o processo inteiro sistematizado e as armadilhas documentadas.
+This repository is the **bridge** between the community's excellent technical work (which got Linux running on these chips) and the ordinary person who just wants to plug it in and use it.
 
 ---
 
-## 📦 O que tem aqui
+## 🙏 Credits and foundation
 
-O OpenDongle cobre a jornada inteira do dongle, do "lixo" ao "servidor pronto":
+OpenDongle **does not reinvent the wheel** — it automates and packages, with a lot of field documentation, the work of those who came before:
 
-| Etapa | O que faz |
-|-------|-----------|
-| **Instalação** | Backup do firmware original → flash do Debian → verificação automática |
-| **Otimização** | zram, logs em RAM, proteção do eMMC — deixa o Linux durar anos num chip barato |
-| **Painel** | Rede Wi-Fi própria + página de configuração (`opendongle.local`) e comando `opendongle` |
-| **Recuperação** | Restauração de backup e diagnóstico de placa para dongles "brickados" |
+- **[OpenStick-Builder](https://github.com/LongQT-sea/OpenStick-Builder)** (by LongQT-sea) — the Debian image for MSM8916 that OpenDongle installs. It's the heart of everything. MIT license.
+- **[postmarketOS](https://postmarketos.org/)** — the porting work that made Linux possible on these chips.
+- **[edl](https://github.com/bkerler/edl)** (by bkerler) — the tool that talks to Qualcomm's EDL mode.
 
-Tudo orquestrado por um único comando (`opendongle_completo.py`) que roda do PC e conduz o dongle do começo ao fim.
+OpenDongle is the automation layer **on top of** these tools, with the whole process systematized and the pitfalls documented.
 
 ---
 
-## 🚀 Uso rápido
+## 📦 What's here
 
-> **Pré-requisito de acesso:** o processo conversa com o dongle várias vezes via SSH. Para não digitar a senha a cada etapa, o OpenDongle instala uma chave SSH automaticamente. Se preferir o método manual (recomendado publicar), pareie o PC com o dongle uma vez:
+OpenDongle covers the dongle's entire journey, from "trash" to "ready server":
+
+| Stage | What it does |
+|-------|--------------|
+| **Install** | Back up the original firmware → flash Debian → automatic verification |
+| **Optimize** | zram, logs in RAM, eMMC protection — makes Linux last years on a cheap chip |
+| **Panel** | Its own Wi-Fi network + a configuration page (`opendongle.local`) and the `opendongle` command |
+| **Recovery** | Backup restore and board diagnostics for "bricked" dongles |
+
+All orchestrated by a single command (`opendongle_completo.py`) that runs from the PC and drives the dongle end to end.
+
+---
+
+## 🚀 Quick start
+
+> **Access prerequisite:** the process talks to the dongle over SSH several times. To avoid typing the password at every step, OpenDongle installs an SSH key automatically. If you prefer the manual method (recommended before publishing), pair the PC with the dongle once:
 > ```
 > ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null user@192.168.100.1
 > ```
-> Como atalho para processar muitos dongles em lote, instalar o `sshpass` (`sudo apt install -y sshpass`) deixa a instalação da chave 100% automática. É opcional.
+> As a shortcut for flashing many dongles in a batch, installing `sshpass` (`sudo apt install -y sshpass`) makes the key install 100% automatic. It's optional.
 
-**1. Prepare o ambiente** (baixa a imagem e as ferramentas):
+**1. Prepare the environment** (downloads the image and the tools):
 ```
 sudo ./install.sh
 python3 setup_estrutura.py
 ```
 
-**2. Rode o processo completo** (com o dongle em modo EDL):
+**2. Run the full process** (with the dongle in EDL mode):
 ```
 python3 opendongle_completo.py
 ```
 
-O assistente pergunta se o Debian já está instalado, conduz a instalação, otimiza, instala o painel e configura o acesso USB. Ao final, o dongle sobe uma rede Wi-Fi chamada **OpenDongle** (senha `opendongle`) e responde em **opendongle.local**.
+The wizard asks whether Debian is already installed, runs the install, optimizes, installs the panel and sets up USB access. At the end, the dongle raises a Wi-Fi network called **OpenDongle** (password `opendongle`) and answers at **opendongle.local**.
 
-**3. Use.** Conecte no Wi-Fi do dongle, abra `opendongle.local`, e escolha o que ele vai ser.
+**3. Use it.** Connect to the dongle's Wi-Fi, open `opendongle.local`, and choose what it will be.
 
-> **`opendongle.local` não abre?** Em alguns Windows o mDNS falha. Rode `python3 ferramentas/opendongle_localizar.py` no PC — ele acha o IP do dongle na rede local sozinho e já abre o painel, sem precisar de USB nem entrar no roteador.
+> **`opendongle.local` won't open?** On some Windows setups mDNS fails. Run `python3 ferramentas/opendongle_localizar.py` on the PC — it finds the dongle's IP on the local network by itself and opens the panel, with no USB and no need to log into the router.
 
-> **Não sabe o endereço que o dongle pegou no Wi-Fi de casa?** O painel mostra em **Geral › Status e saúde** — o endereço atual e também o último em que ele esteve. Pelo cabo USB (`192.168.100.1`) dá pra descobrir onde ele estava. No roteador ele aparece como **opendongle**, sempre no mesmo endereço.
+> **Don't know the address the dongle got on the home Wi-Fi?** The panel shows it under **General › Status and health** — the current address and also the last one it had. Over the USB cable (`192.168.100.1`) you can find out where it was. On the router it shows up as **opendongle**, always at the same address.
 
-> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Quem prefere que ele entre sozinho liga a **conexão automática** e escolhe quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
-
----
-
-## 🛠️ Os scripts
-
-Para quem quer entender ou usar peça por peça:
-
-- **`opendongle_completo.py`** — o orquestrador. Roda tudo de ponta a ponta.
-- **`opendongle_autoinstall.py`** — instala o Debian (backup → flash → verificação), com detecção de placa e modo de teste.
-- **`otimizar_dongle.py`** — aplica as otimizações de durabilidade e velocidade (reversível).
-- **`instalar_opendongle.py`** — instala o painel de configuração (motor + CLI + web).
-- **`opendongle/`** — o painel: motor único (`engine`), configuração central (`config`, em `/etc/opendongle/config.json`) e o gerador dos arquivos de rede a partir dela (`apply`: dnsmasq, firewall nftables, APN), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`), o `opendongled` (um processo só rodando web, uplink, LEDs e descoberta, pra economizar RAM) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
-- **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
-- **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
-- **`opendongle_localizar.py`** — roda no PC; acha o IP do dongle na rede local quando `opendongle.local` não resolve (sem depender de USB nem de entrar no roteador).
-- **`teste_campo.py`** — roda no PC; teste de campo guiado: roteiro passo a passo + logs do dongle cruzados num relatório. Veja [TESTE_DE_CAMPO.md](TESTE_DE_CAMPO.md) e [CHECKLIST_TESTE_CAMPO.md](CHECKLIST_TESTE_CAMPO.md).
+> **Lost the dongle on the network?** Unplug it and power it back on: every boot starts as a **hotspot**, even if it already knows the home network. The network stays saved and comes back with one tap on *Reconnect*. If you'd rather it join on its own, turn on **auto-connect** and pick which known networks count — and even then, if none is nearby, it falls back to a hotspot.
 
 ---
 
-## 👋 Primeiro uso (usuário final)
+## 🛠️ The scripts
 
-O dongle sai da instalação com o usuário `user` e a senha `1`. Quem instala pelo
-cabo USB troca isso pelo SSH ou pelo painel. Quem recebe o dongle pronto e liga
-na tomada (porta USB em modo **host**) abre o painel e, **enquanto a senha
-ainda for `1`**, só vê o cadastro inicial, em três etapas:
+For anyone who wants to understand it or use it piece by piece:
 
-1. senha do root (digitada duas vezes);
-2. nome e sobrenome;
-3. nome de usuário e senha do painel (digitada duas vezes, diferente da do root).
-
-Ao concluir, o painel libera e já fica logado. Pelo USB o cadastro nunca aparece.
-
----
-
-## 🎛️ O comando `opendongle`
-
-O painel também é um comando de terminal no próprio dongle — a mesma lógica da interface web, no CLI:
-
-```
-sudo opendongle status                              # modo, internet, hotspot
-sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
-sudo opendongle wifi --list                         # redes Wi-Fi visíveis
-sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
-sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
-sudo opendongle usuario --novo lucas                # troca o nome do usuário (mesmo UID, sudo e senha)
-sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
-sudo opendongle recursos                            # RAM usada por serviço
-sudo opendongle config show                         # config central (config aplicar pra reaplicar)
-sudo opendongle config set lan.dhcp.inicio=20       # altera e aplica (como o uci set)
-sudo opendongle dhcp clientes                       # aparelhos conectados (fixar/soltar IP fixo)
-sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
-sudo opendongle logs dnsmasq                        # log do sistema ou de um serviço
-sudo opendongle hardware                            # placa, eMMC e desgaste, rádios, modem
-sudo opendongle hora status|auto on|ajustar DATA HORA
-sudo opendongle espaco analisar|liberar             # o que ocupa o disco e limpeza
-sudo opendongle atualizacoes verificar|instalar     # roda em segundo plano
-sudo opendongle reiniciar|desligar
-sudo opendongle bluetooth status|buscar|parear MAC  # parear com PIN/código: responder sim|PIN
-sudo opendongle usb [host|device]                   # aparelhos USB e papel da porta
-sudo opendongle audio                               # placas de som (volume, mudo, padrao, testar)
-sudo opendongle audio bluetooth on|off              # PipeWire sob demanda pra fone/caixa Bluetooth
-sudo opendongle servicos [ligar|desligar NOME]      # serviços do boot (essenciais protegidos)
-sudo opendongle tor on|off|status                   # navegação da LAN pela rede Tor (instala na 1ª vez)
-sudo opendongle remoto on [--lan] [--saida]         # acesso remoto via Tailscale (login|logout|status|off)
-sudo opendongle backup > backup.json                # exporta a config
-sudo opendongle restaurar backup.json               # restaura e aplica um backup
-sudo opendongle reset                               # volta à configuração de fábrica
-sudo opendongle rede confirmar                      # confirma mudança de rede (senão ela volta sozinha em 3 min)
-```
+- **`opendongle_completo.py`** — the orchestrator. Runs everything end to end.
+- **`opendongle_autoinstall.py`** — installs Debian (backup → flash → verify), with board detection and a test mode.
+- **`otimizar_dongle.py`** — applies the durability and speed optimizations (reversible).
+- **`instalar_opendongle.py`** — installs the configuration panel (engine + CLI + web).
+- **`opendongle/`** — the panel: a single engine (`engine`), central configuration (`config`, in `/etc/opendongle/config.json`) and the generator that turns it into native network files (`apply`: dnsmasq, nftables firewall, APN), the terminal command (`cli`), the web interface (`web`), the JSON API for the new panel (`api`), the uplink guard (`uplink_guard`), the LED controller (`led`), hardware diagnostics (`diag`), network discovery (`discovery`), `opendongled` (a single process running web, uplink, LEDs and discovery to save RAM) and `usb-role-autosense.sh` (access groups, Bluetooth, automatic USB role and plug-and-play 4G by SIM).
+- **`painel/`** — the new panel front-end (Next.js/React, exported as a static bundle). See [painel/README.md](painel/README.md).
+- **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recovery.
+- **`fable_detector.py`** — identifies the chip of any Qualcomm device in EDL (an exploration tool).
+- **`opendongle_localizar.py`** — runs on the PC; finds the dongle's IP on the local network when `opendongle.local` doesn't resolve (no USB, no router login).
+- **`teste_campo.py`** — runs on the PC; a guided field test: a step-by-step script cross-referenced with the dongle's logs into one report. See [TESTE_DE_CAMPO.md](TESTE_DE_CAMPO.md) and [CHECKLIST_TESTE_CAMPO.md](CHECKLIST_TESTE_CAMPO.md).
 
 ---
 
-## ⚙️ Hardware alvo
+## 👋 First use (end user)
+
+The dongle leaves the install with user `user` and password `1`. Whoever installs over the USB cable changes that via SSH or the panel. Whoever receives a ready dongle and plugs it into a wall charger (USB port in **host** mode) opens the panel and, **while the password is still `1`**, only sees the initial sign-up, in a few steps:
+
+1. root password (typed twice);
+2. first and last name;
+3. username and panel password (typed twice, different from root's);
+4. an optional photo.
+
+When done, the panel unlocks and you're already logged in. Over USB the sign-up never appears.
+
+---
+
+## 🎛️ The `opendongle` command
+
+The panel is also a terminal command on the dongle itself — the same logic as the web interface, in the CLI. The full command reference is in **[COMMANDS.md](COMMANDS.md)**.
+
+---
+
+## ⚙️ Target hardware
 
 - **Chip:** Qualcomm MSM8916 (Snapdragon 410), quad-core ARM64
-- **RAM:** ~382 MB (por isso as otimizações importam tanto)
+- **RAM:** ~382 MB (which is why the optimizations matter so much)
 
 ---
 
-## ⚠️ Avisos
+## ⚠️ Warnings
 
-- **Mexer no firmware tem risco.** O processo faz backup obrigatório antes de escrever, mas hardware é hardware. Comece por um dongle que você pode perder.
-- **Sem chip SIM, sem 4G.** O dongle funciona como servidor/rede USB mesmo sem SIM, mas a função de modem depende de um chip ativo.
-- **Este projeto instala software de terceiros** (a imagem OpenStick). O crédito é de quem o fez.
-
----
-
-## 📄 Licença
-
-MIT — veja [LICENSE](LICENSE). O OpenDongle usa a imagem OpenStick, também MIT (© 2024 GP Orcullo), cujo aviso de licença é mantido conforme exigido.
+- **Touching firmware carries risk.** The process makes a mandatory backup before writing, but hardware is hardware. Start with a dongle you can afford to lose.
+- **No SIM, no 4G.** The dongle works as a server/USB network even without a SIM, but the modem function needs an active chip.
+- **This project installs third-party software** (the OpenStick image). Credit goes to those who made it.
 
 ---
 
-## 👤 Autor
+## 📄 License
 
-Feito por **[@pianissimobr](https://github.com/pianissimobr)** — um entusiasta de reaproveitamento de hardware e inclusão digital, do Brasil. 🇧🇷
+MIT — see [LICENSE](LICENSE). OpenDongle uses the OpenStick image, also MIT (© 2024 GP Orcullo), whose license notice is kept as required.
 
-> Este projeto nasceu de uma pergunta simples: e se o "lixo eletrônico" fosse, na verdade, um tesouro esperando ser aberto?
+---
+
+## 👤 Author
+
+Made by **[@pianissimobr](https://github.com/pianissimobr)** — a hardware-reuse and digital-inclusion enthusiast, from Brazil. 🇧🇷
+
+> This project was born from a simple question: what if "e-waste" were, in fact, a treasure waiting to be opened?

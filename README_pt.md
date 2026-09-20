@@ -1,5 +1,7 @@
 # 🔌 OpenDongle
 
+[English](README.md) · **Português**
+
 **OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
 
 ---
@@ -80,9 +82,10 @@ Para quem quer entender ou usar peça por peça:
 - **`opendongle_autoinstall.py`** — instala o Debian (backup → flash → verificação), com detecção de placa e modo de teste.
 - **`otimizar_dongle.py`** — aplica as otimizações de durabilidade e velocidade (reversível).
 - **`instalar_opendongle.py`** — instala o painel de configuração (motor + CLI + web).
-- **`opendongle/`** — o painel: motor único (`engine`), configuração central (`config`, em `/etc/opendongle/config.json`) e o gerador dos arquivos de rede a partir dela (`apply`: dnsmasq, firewall nftables, APN), comando de terminal (`cli`), interface web (`web`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`), o `opendongled` (um processo só rodando web, uplink, LEDs e descoberta, pra economizar RAM) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
+- **`opendongle/`** — o painel: motor único (`engine`), configuração central (`config`, em `/etc/opendongle/config.json`) e o gerador dos arquivos de rede a partir dela (`apply`: dnsmasq, firewall nftables, APN), comando de terminal (`cli`), interface web (`web`), a API JSON do painel novo (`api`), o guardião de uplink (`uplink_guard`), o controlador de LEDs (`led`), o diagnóstico de hardware (`diag`), a descoberta na rede (`discovery`), o `opendongled` (um processo só rodando web, uplink, LEDs e descoberta, pra economizar RAM) e o `usb-role-autosense.sh` (grupos de acesso, Bluetooth, papel USB automático e 4G plug-and-play por SIM).
 - **`restaurar_backup.py`** / **`restaurar_calibracao_ssh.py`** — recuperação.
 - **`fable_detector.py`** — identifica o chip de qualquer dispositivo Qualcomm em EDL (ferramenta de exploração).
+- **`painel/`** — front-end do painel novo (Next.js/React, exportado estático). Veja [painel/README.md](painel/README.md).
 - **`opendongle_localizar.py`** — roda no PC; acha o IP do dongle na rede local quando `opendongle.local` não resolve (sem depender de USB nem de entrar no roteador).
 - **`teste_campo.py`** — roda no PC; teste de campo guiado: roteiro passo a passo + logs do dongle cruzados num relatório. Veja [TESTE_DE_CAMPO.md](TESTE_DE_CAMPO.md) e [CHECKLIST_TESTE_CAMPO.md](CHECKLIST_TESTE_CAMPO.md).
 
@@ -93,11 +96,12 @@ Para quem quer entender ou usar peça por peça:
 O dongle sai da instalação com o usuário `user` e a senha `1`. Quem instala pelo
 cabo USB troca isso pelo SSH ou pelo painel. Quem recebe o dongle pronto e liga
 na tomada (porta USB em modo **host**) abre o painel e, **enquanto a senha
-ainda for `1`**, só vê o cadastro inicial, em três etapas:
+ainda for `1`**, só vê o cadastro inicial, nestas etapas:
 
 1. senha do root (digitada duas vezes);
 2. nome e sobrenome;
-3. nome de usuário e senha do painel (digitada duas vezes, diferente da do root).
+3. nome de usuário e senha do painel (digitada duas vezes, diferente da do root);
+4. uma foto (opcional).
 
 Ao concluir, o painel libera e já fica logado. Pelo USB o cadastro nunca aparece.
 
@@ -105,39 +109,9 @@ Ao concluir, o painel libera e já fica logado. Pelo USB o cadastro nunca aparec
 
 ## 🎛️ O comando `opendongle`
 
-O painel também é um comando de terminal no próprio dongle — a mesma lógica da interface web, no CLI:
-
-```
-sudo opendongle status                              # modo, internet, hotspot
-sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
-sudo opendongle wifi --list                         # redes Wi-Fi visíveis
-sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
-sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
-sudo opendongle usuario --novo lucas                # troca o nome do usuário (mesmo UID, sudo e senha)
-sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
-sudo opendongle recursos                            # RAM usada por serviço
-sudo opendongle config show                         # config central (config aplicar pra reaplicar)
-sudo opendongle config set lan.dhcp.inicio=20       # altera e aplica (como o uci set)
-sudo opendongle dhcp clientes                       # aparelhos conectados (fixar/soltar IP fixo)
-sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
-sudo opendongle logs dnsmasq                        # log do sistema ou de um serviço
-sudo opendongle hardware                            # placa, eMMC e desgaste, rádios, modem
-sudo opendongle hora status|auto on|ajustar DATA HORA
-sudo opendongle espaco analisar|liberar             # o que ocupa o disco e limpeza
-sudo opendongle atualizacoes verificar|instalar     # roda em segundo plano
-sudo opendongle reiniciar|desligar
-sudo opendongle bluetooth status|buscar|parear MAC  # parear com PIN/código: responder sim|PIN
-sudo opendongle usb [host|device]                   # aparelhos USB e papel da porta
-sudo opendongle audio                               # placas de som (volume, mudo, padrao, testar)
-sudo opendongle audio bluetooth on|off              # PipeWire sob demanda pra fone/caixa Bluetooth
-sudo opendongle servicos [ligar|desligar NOME]      # serviços do boot (essenciais protegidos)
-sudo opendongle tor on|off|status                   # navegação da LAN pela rede Tor (instala na 1ª vez)
-sudo opendongle remoto on [--lan] [--saida]         # acesso remoto via Tailscale (login|logout|status|off)
-sudo opendongle backup > backup.json                # exporta a config
-sudo opendongle restaurar backup.json               # restaura e aplica um backup
-sudo opendongle reset                               # volta à configuração de fábrica
-sudo opendongle rede confirmar                      # confirma mudança de rede (senão ela volta sozinha em 3 min)
-```
+O painel também é um comando de terminal no próprio dongle — a mesma lógica da
+interface web, no CLI. A referência completa dos comandos está em
+**[COMANDOS.md](COMANDOS.md)**.
 
 ---
 
