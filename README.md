@@ -1,6 +1,6 @@
 # 🔌 OpenDongle
 
-**OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
+**OpenDongle** foi escrito para transformar modems 4G USB baseados no chip Qualcomm MSM8916 (os "dongles") e os transforma, de forma automatizada, em pequenos computadores Linux do tamanho de um pendrive — que gastam ~2W.
 
 ---
 
@@ -60,15 +60,17 @@ python3 setup_estrutura.py
 python3 opendongle_completo.py
 ```
 
-O assistente pergunta se o Debian já está instalado, conduz a instalação, otimiza, instala o painel e configura o acesso USB. Ao final, o dongle sobe uma rede Wi-Fi chamada **OpenDongle** (senha `opendongle`) e responde em **opendongle.local**.
+O assistente pergunta se o Debian já está instalado, conduz a instalação, otimiza, instala o painel e configura o acesso USB. Ao final, o dongle sobe uma rede Wi-Fi chamada **OpenDongle** (senha `opendongle`).
 
 **3. Use.** Conecte no Wi-Fi do dongle, abra `opendongle.local`, e escolha o que ele vai ser.
+
+## Possiveis Erros:
 
 > **`opendongle.local` não abre?** Em alguns Windows o mDNS falha. Rode `python3 ferramentas/opendongle_localizar.py` no PC — ele acha o IP do dongle na rede local sozinho e já abre o painel, sem precisar de USB nem entrar no roteador.
 
 > **Não sabe o endereço que o dongle pegou no Wi-Fi de casa?** O painel mostra em **Geral › Status e saúde** — o endereço atual e também o último em que ele esteve. Pelo cabo USB (`192.168.100.1`) dá pra descobrir onde ele estava. No roteador ele aparece como **opendongle**, sempre no mesmo endereço.
 
-> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Quem prefere que ele entre sozinho liga a **conexão automática** e escolhe quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
+> **Perdeu o dongle na rede?** Tire da tomada e ligue de novo: todo boot começa no **hotspot**, mesmo que ele já conheça a rede de casa. A rede fica salva e volta com um toque em *Reconectar*. Pode automatizar para que ele entre sozinho liga a **conexão automática** e escolhe quais redes conhecidas valem — e mesmo assim, se nenhuma estiver por perto, ele vira hotspot.
 
 ---
 
@@ -100,44 +102,6 @@ ainda for `1`**, só vê o cadastro inicial, em três etapas:
 3. nome de usuário e senha do painel (digitada duas vezes, diferente da do root).
 
 Ao concluir, o painel libera e já fica logado. Pelo USB o cadastro nunca aparece.
-
----
-
-## 🎛️ O comando `opendongle`
-
-O painel também é um comando de terminal no próprio dongle — a mesma lógica da interface web, no CLI:
-
-```
-sudo opendongle status                              # modo, internet, hotspot
-sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
-sudo opendongle wifi --list                         # redes Wi-Fi visíveis
-sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
-sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
-sudo opendongle usuario --novo lucas                # troca o nome do usuário (mesmo UID, sudo e senha)
-sudo opendongle diagnostico                          # testa áudio, Bluetooth, vídeo USB e modem 4G
-sudo opendongle recursos                            # RAM usada por serviço
-sudo opendongle config show                         # config central (config aplicar pra reaplicar)
-sudo opendongle config set lan.dhcp.inicio=20       # altera e aplica (como o uci set)
-sudo opendongle dhcp clientes                       # aparelhos conectados (fixar/soltar IP fixo)
-sudo opendongle redir add --nome web --porta-externa 8080 --ip 192.168.100.20 --porta-interna 80
-sudo opendongle logs dnsmasq                        # log do sistema ou de um serviço
-sudo opendongle hardware                            # placa, eMMC e desgaste, rádios, modem
-sudo opendongle hora status|auto on|ajustar DATA HORA
-sudo opendongle espaco analisar|liberar             # o que ocupa o disco e limpeza
-sudo opendongle atualizacoes verificar|instalar     # roda em segundo plano
-sudo opendongle reiniciar|desligar
-sudo opendongle bluetooth status|buscar|parear MAC  # parear com PIN/código: responder sim|PIN
-sudo opendongle usb [host|device]                   # aparelhos USB e papel da porta
-sudo opendongle audio                               # placas de som (volume, mudo, padrao, testar)
-sudo opendongle audio bluetooth on|off              # PipeWire sob demanda pra fone/caixa Bluetooth
-sudo opendongle servicos [ligar|desligar NOME]      # serviços do boot (essenciais protegidos)
-sudo opendongle tor on|off|status                   # navegação da LAN pela rede Tor (instala na 1ª vez)
-sudo opendongle remoto on [--lan] [--saida]         # acesso remoto via Tailscale (login|logout|status|off)
-sudo opendongle backup > backup.json                # exporta a config
-sudo opendongle restaurar backup.json               # restaura e aplica um backup
-sudo opendongle reset                               # volta à configuração de fábrica
-sudo opendongle rede confirmar                      # confirma mudança de rede (senão ela volta sozinha em 3 min)
-```
 
 ---
 
