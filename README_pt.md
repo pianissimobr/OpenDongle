@@ -4,6 +4,11 @@
 
 **OpenDongle** pega aqueles modems 4G USB baratos baseados no chip Qualcomm MSM8916 (os "dongles" que viram lixo eletrônico numa gaveta) e os transforma, de forma automatizada, em computadores Linux completos do tamanho de um pendrive — que gastam ~2W e ficam ligados o ano inteiro.
 
+<p align="center">
+  <img src="docs/opendongle-painel.png" alt="Painel do OpenDongle" width="49%">
+  <img src="docs/opendongle-cadastro.png" alt="Cadastro de primeiro uso" width="49%">
+</p>
+
 ---
 
 ## 💡 Por que isso existe

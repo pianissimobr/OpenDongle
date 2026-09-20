@@ -4,6 +4,11 @@
 
 **OpenDongle** takes those cheap MSM8916-based 4G USB modems (the "dongles" that end up as e-waste in a drawer) and turns them, automatically, into full Linux computers the size of a flash drive — drawing ~2 W and running all year long.
 
+<p align="center">
+  <img src="docs/opendongle-painel.png" alt="OpenDongle panel" width="49%">
+  <img src="docs/opendongle-cadastro.png" alt="First-use sign-up" width="49%">
+</p>
+
 ---
 
 ## 💡 Why this exists
