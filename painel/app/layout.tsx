@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { PanelProvider } from '@/lib/panel/store'
 import { Shell } from '@/components/panel/shell'
+import { I18nProvider } from '@/lib/panel/i18n'
 
 export const metadata: Metadata = {
   title: 'OpenDongle — Painel de administração',
@@ -31,9 +32,11 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: noFlash }} />
       </head>
       <body className="antialiased">
-        <PanelProvider>
-          <Shell>{children}</Shell>
-        </PanelProvider>
+        <I18nProvider>
+          <PanelProvider>
+            <Shell>{children}</Shell>
+          </PanelProvider>
+        </I18nProvider>
       </body>
     </html>
   )

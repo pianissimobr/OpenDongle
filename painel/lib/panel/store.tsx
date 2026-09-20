@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import { useRouter } from "next/navigation"
+import { t } from "@/lib/panel/i18n"
 
 /* ============================================================
    Tipos
@@ -350,11 +351,11 @@ export const PERFIL = { nome: "", usuario: "", admin: true, foto: false }
 
 export function saudacao() {
   const nome = PERFIL.nome || PERFIL.usuario
-  const primeiro = nome.split(" ")[0] || "visitante"
+  const primeiro = nome.split(" ")[0] || t("visitante", "there")
   const hora = new Date().getHours()
-  if (hora < 12) return `Bom dia, ${primeiro}`
-  if (hora < 18) return `Boa tarde, ${primeiro}`
-  return `Boa noite, ${primeiro}`
+  if (hora < 12) return t(`Bom dia, ${primeiro}`, `Good morning, ${primeiro}`)
+  if (hora < 18) return t(`Boa tarde, ${primeiro}`, `Good afternoon, ${primeiro}`)
+  return t(`Boa noite, ${primeiro}`, `Good evening, ${primeiro}`)
 }
 
 /* ============================================================

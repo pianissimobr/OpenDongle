@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Search as SearchIcon, CornerDownLeft } from "lucide-react"
 import { BUSCA, normaliza } from "@/lib/panel/nav"
+import { t } from "@/lib/panel/i18n"
 
 export function Search({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter()
@@ -16,7 +17,7 @@ export function Search({ onNavigate }: { onNavigate?: () => void }) {
     const termo = normaliza(q.trim())
     if (!termo) return []
     return BUSCA.filter((i) => {
-      const alvo = normaliza(`${i.titulo} ${i.palavras}`)
+      const alvo = normaliza(`${i.titulo} ${i.tituloEn} ${i.palavras}`)
       return termo.split(/\s+/).every((p) => alvo.includes(p))
     }).slice(0, 7)
   }, [q])
@@ -61,7 +62,7 @@ export function Search({ onNavigate }: { onNavigate?: () => void }) {
             setAberto(false)
           }
         }}
-        placeholder="Buscar configurações..."
+        placeholder={t("Buscar configurações...", "Search settings...")}
         className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/20"
       />
       {aberto && resultados.length > 0 ? (
@@ -75,7 +76,7 @@ export function Search({ onNavigate }: { onNavigate?: () => void }) {
                   i === ativo ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
                 }`}
               >
-                <span className="truncate text-foreground">{r.titulo}</span>
+                <span className="truncate text-foreground">{t(r.titulo, r.tituloEn)}</span>
                 {i === ativo ? <CornerDownLeft className="size-3.5 shrink-0 text-muted-foreground" /> : null}
               </button>
             </li>
@@ -84,7 +85,7 @@ export function Search({ onNavigate }: { onNavigate?: () => void }) {
       ) : null}
       {aberto && q.trim() && resultados.length === 0 ? (
         <div className="absolute left-0 right-0 top-11 z-50 rounded-xl border border-border bg-popover px-3 py-3 text-sm text-muted-foreground shadow-lg">
-          Nada encontrado para “{q}”.
+          {t("Nada encontrado para", "No results for")} “{q}”.
         </div>
       ) : null}
     </div>

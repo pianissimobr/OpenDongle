@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Sun, Moon } from "lucide-react"
+import { t } from "@/lib/panel/i18n"
 
 type Tema = "claro" | "escuro" | "auto"
 
@@ -34,12 +35,12 @@ export function ThemeToggle() {
     <button
       type="button"
       onClick={alterna}
-      aria-label="Alternar tema"
+      aria-label={t("Alternar tema", "Toggle theme")}
       className="flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     >
       <Sun className="size-4.5 dark:hidden" />
       <Moon className="hidden size-4.5 dark:block" />
-      <span className="sr-only">Alternar tema {tema}</span>
+      <span className="sr-only">{t(`Alternar tema ${tema}`, `Toggle theme ${tema}`)}</span>
     </button>
   )
 }

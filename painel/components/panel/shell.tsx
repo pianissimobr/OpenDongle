@@ -3,14 +3,15 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useState, type ReactNode } from "react"
-import { Menu, X, LogOut, Wifi, Radio, ChevronDown, CircleDot } from "lucide-react"
+import { Menu, X, LogOut, Wifi, Radio, CircleDot, Globe } from "lucide-react"
 import { CATEGORIAS, CAT_AJUDA, CAT_AVANCADAS, CATEGORIA_DA_ROTA } from "@/lib/panel/nav"
 import { CatIcon } from "./icon"
 import { Search } from "./search"
 import { ThemeToggle } from "./theme"
 import { Avatar } from "./avatar"
 import { ProcessOverlay } from "./overlay"
-import { ESTADOS, PERFIL, usePanel } from "@/lib/panel/store"
+import { PERFIL, usePanel } from "@/lib/panel/store"
+import { t, useIdioma, type Idioma } from "@/lib/panel/i18n"
 import { cn } from "@/lib/utils"
 
 function Marca() {
@@ -46,45 +47,28 @@ function EstadoChip() {
     <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
       <Icon className={cn("size-4", online ? "text-ok" : "text-warn")} />
       <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        {estado.modo === "wifi" ? estado.endereco?.ssid ?? "Wi-Fi" : estado.ssidHotspot ?? "Hotspot"}
+        {estado.modo === "wifi" ? estado.endereco?.ssid ?? t("Wi-Fi", "Wi-Fi") : estado.ssidHotspot ?? t("Hotspot", "Hotspot")}
       </span>
       <span className={cn("size-1.5 rounded-full", online ? "bg-ok" : "bg-warn")} />
     </div>
   )
 }
 
-function DebugSwitcher() {
-  const { estadoNome, setEstado, avancadas, setAvancadas } = usePanel()
-  const [aberto, setAberto] = useState(false)
+function LangSwitcher() {
+  const { lang, trocar } = useIdioma()
+  const outro: Idioma = lang === "pt" ? "en" : "pt"
   return (
-    <div className="rounded-lg border border-dashed border-border">
-      <button
-        onClick={() => setAberto((v) => !v)}
-        className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground"
-      >
-        <span>Simulação (protótipo)</span>
-        <ChevronDown className={cn("size-3.5 transition-transform", aberto && "rotate-180")} />
-      </button>
-      {aberto ? (
-        <div className="space-y-2 border-t border-border p-3">
-          <select
-            value={estadoNome}
-            onChange={(e) => setEstado(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
-          >
-            {Object.entries(ESTADOS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v.rotulo}
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <input type="checkbox" checked={avancadas} onChange={(e) => setAvancadas(e.target.checked)} />
-            Mostrar configurações avançadas
-          </label>
-        </div>
-      ) : null}
-    </div>
+    <button
+      onClick={() => trocar(outro)}
+      className="flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      title={t("Trocar idioma", "Switch language")}
+    >
+      <span className="flex items-center gap-2">
+        <Globe className="size-3.5" />
+        {lang === "pt" ? "Português" : "English"}
+      </span>
+      <span className="text-foreground">{outro === "pt" ? "PT" : "EN"}</span>
+    </button>
   )
 }
 
@@ -99,24 +83,24 @@ function SidebarConteudo({ ativoId, onNavigate }: { ativoId: string; onNavigate?
         {CATEGORIAS.map((c) => (
           <NavItem key={c.id} rota={c.rota} ativo={ativoId === c.id}>
             <CatIcon name={c.icon} className="size-4.5" />
-            {c.nome}
+            {t(c.nome, c.nomeEn)}
           </NavItem>
         ))}
         <div className="my-2 border-t border-border" />
         <NavItem rota={CAT_AJUDA.rota} ativo={ativoId === CAT_AJUDA.id}>
           <CatIcon name={CAT_AJUDA.icon} className="size-4.5" />
-          {CAT_AJUDA.nome}
+          {t(CAT_AJUDA.nome, CAT_AJUDA.nomeEn)}
         </NavItem>
         {avancadas ? (
           <NavItem rota={CAT_AVANCADAS.rota} ativo={ativoId === CAT_AVANCADAS.id}>
             <CatIcon name={CAT_AVANCADAS.icon} className="size-4.5" />
-            {CAT_AVANCADAS.nome}
+            {t(CAT_AVANCADAS.nome, CAT_AVANCADAS.nomeEn)}
           </NavItem>
         ) : null}
       </nav>
       <div className="space-y-3 border-t border-border p-3">
         <EstadoChip />
-        <DebugSwitcher />
+        <LangSwitcher />
         <Link
           href="/perfil"
           onClick={onNavigate}
@@ -125,7 +109,7 @@ function SidebarConteudo({ ativoId, onNavigate }: { ativoId: string; onNavigate?
           <Avatar size={36} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{PERFIL.nome}</span>
-            <span className="block truncate text-xs text-muted-foreground">Administrador</span>
+            <span className="block truncate text-xs text-muted-foreground">{t("Administrador", "Administrator")}</span>
           </span>
           <LogOut className="size-4 text-muted-foreground" />
         </Link>
@@ -137,14 +121,15 @@ function SidebarConteudo({ ativoId, onNavigate }: { ativoId: string; onNavigate?
 export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const [drawer, setDrawer] = useState(false)
-  const ativoId = CATEGORIA_DA_ROTA[pathname] ?? "inicio"
+  const rota = (pathname || "/").replace(/\/+$/, "") || "/"
+  const ativoId = CATEGORIA_DA_ROTA[rota] ?? "inicio"
 
   useEffect(() => {
     setDrawer(false)
   }, [pathname])
 
-  // login é pré-autenticação: sem sidebar, busca ou avatar
-  if (pathname === "/login" || pathname === "/cadastro") return <>{children}</>
+  // login e cadastro são pré-autenticação: sem sidebar, busca ou avatar
+  if (rota === "/login" || rota === "/cadastro") return <>{children}</>
 
   return (
     <div className="min-h-svh bg-background">
@@ -161,7 +146,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <button
               onClick={() => setDrawer(false)}
               className="absolute right-3 top-4 flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
-              aria-label="Fechar menu"
+              aria-label={t("Fechar menu", "Close menu")}
             >
               <X className="size-4.5" />
             </button>
@@ -176,7 +161,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <button
             onClick={() => setDrawer(true)}
             className="flex size-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted lg:hidden"
-            aria-label="Abrir menu"
+            aria-label={t("Abrir menu", "Open menu")}
           >
             <Menu className="size-5" />
           </button>

@@ -6,13 +6,14 @@ import { CATEGORIAS, CAT_AJUDA } from "@/lib/panel/nav"
 import { CatIcon } from "@/components/panel/icon"
 import { Card, Pill, Stat } from "@/components/panel/ui"
 import { saudacao, usePanel, type Severity } from "@/lib/panel/store"
+import { t } from "@/lib/panel/i18n"
 import { cn } from "@/lib/utils"
 
-const DESC: Record<string, string> = {
-  internet: "Hotspot, Wi-Fi, modem 4G, portas e acesso remoto.",
-  perfil: "Sua conta, senha e foto de administrador.",
-  dispositivos: "Bluetooth, USB, áudio e luzes do aparelho.",
-  sistema: "Atualizações, hora, espaço, hardware e backup.",
+const DESC: Record<string, [string, string]> = {
+  internet: ["Hotspot, Wi-Fi, modem 4G, portas e acesso remoto.", "Hotspot, Wi-Fi, 4G modem, ports and remote access."],
+  perfil: ["Sua conta, senha e foto de administrador.", "Your account, password and admin photo."],
+  dispositivos: ["Bluetooth, USB, áudio e luzes do aparelho.", "Bluetooth, USB, audio and the device's lights."],
+  sistema: ["Atualizações, hora, espaço, hardware e backup.", "Updates, time, space, hardware and backup."],
 }
 
 const SEV: Record<Severity, { color: string; Icon: typeof Info; tone: string }> = {
@@ -33,14 +34,14 @@ export default function HomePage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{saudacao()}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Aqui está um resumo do seu dongle.</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t("Aqui está um resumo do seu dongle.", "Here's a summary of your dongle.")}</p>
         </div>
         <Pill tone={online ? "ok" : "warn"}>
           <ModoIcon className="size-3.5" />
           {estado.modo === "wifi"
-            ? `Conectado a ${estado.endereco?.ssid ?? "Wi-Fi"}`
+            ? t(`Conectado a ${estado.endereco?.ssid ?? "Wi-Fi"}`, `Connected to ${estado.endereco?.ssid ?? "Wi-Fi"}`)
             : `Hotspot ${estado.ssidHotspot ?? ""}`}
-          {online ? " · online" : " · sem internet"}
+          {online ? t(" · online", " · online") : t(" · sem internet", " · no internet")}
         </Pill>
       </div>
 
@@ -82,7 +83,7 @@ export default function HomePage() {
           <Stat
             label={
               <span className="flex items-center gap-1.5">
-                <Gauge className="size-3.5" /> Memória RAM
+                <Gauge className="size-3.5" /> {t("Memória RAM", "RAM memory")}
               </span>
             }
             value={`${saude.ramPct}%`}
@@ -94,7 +95,7 @@ export default function HomePage() {
           <Stat
             label={
               <span className="flex items-center gap-1.5">
-                <Thermometer className="size-3.5" /> Temperatura
+                <Thermometer className="size-3.5" /> {t("Temperatura", "Temperature")}
               </span>
             }
             value={`${saude.tempC}°`}
@@ -106,7 +107,7 @@ export default function HomePage() {
           <Stat
             label={
               <span className="flex items-center gap-1.5">
-                <HardDrive className="size-3.5" /> Disco
+                <HardDrive className="size-3.5" /> {t("Disco", "Disk")}
               </span>
             }
             value={`${saude.discoPct}%`}
@@ -117,7 +118,7 @@ export default function HomePage() {
           <Stat
             label={
               <span className="flex items-center gap-1.5">
-                <ModoIcon className="size-3.5" /> Conexão
+                <ModoIcon className="size-3.5" /> {t("Conexão", "Connection")}
               </span>
             }
             value={online ? "OK" : "—"}
@@ -127,7 +128,7 @@ export default function HomePage() {
       </div>
 
       <div>
-        <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Configurações</h2>
+        <h2 className="mb-3 text-sm font-semibold text-muted-foreground">{t("Configurações", "Settings")}</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           {CATEGORIAS.filter((c) => c.id !== "inicio").map((c) => (
             <Link key={c.id} href={c.rota} className="group">
@@ -136,8 +137,8 @@ export default function HomePage() {
                   <CatIcon name={c.icon} className="size-5" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{c.nome}</span>
-                  <span className="mt-0.5 block text-sm text-muted-foreground">{DESC[c.id]}</span>
+                  <span className="block font-medium">{t(c.nome, c.nomeEn)}</span>
+                  <span className="mt-0.5 block text-sm text-muted-foreground">{t(...(DESC[c.id] as [string, string]))}</span>
                 </span>
                 <ArrowRight className="size-4 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />
               </Card>
@@ -149,9 +150,9 @@ export default function HomePage() {
                 <CatIcon name={CAT_AJUDA.icon} className="size-5" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block font-medium">Ajuda e recuperação</span>
+                <span className="block font-medium">{t("Ajuda e recuperação", "Help and recovery")}</span>
                 <span className="mt-0.5 block text-sm text-muted-foreground">
-                  Perdi o acesso, como recuperar e dúvidas comuns.
+                  {t("Perdi o acesso, como recuperar e dúvidas comuns.", "Lost access, how to recover, and common questions.")}
                 </span>
               </span>
               <ArrowRight className="size-4 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />

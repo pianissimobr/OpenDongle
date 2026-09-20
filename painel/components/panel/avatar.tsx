@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Camera } from "lucide-react"
 import { PERFIL, usePanel } from "@/lib/panel/store"
+import { t } from "@/lib/panel/i18n"
 import { fotoParaDataUrl } from "@/lib/panel/foto"
 import { cn } from "@/lib/utils"
 
@@ -44,7 +45,7 @@ export function Avatar({ size = 36, className }: { size?: number; className?: st
       style={{ width: size, height: size, background: src ? undefined : cor() }}
     >
       {src ? (
-        <img src={src} alt="Foto" className="size-full object-cover" />
+        <img src={src} alt={t("Foto", "Photo")} className="size-full object-cover" />
       ) : (
         <span className="font-semibold text-white" style={{ fontSize: size * 0.4 }}>{iniciais()}</span>
       )}
@@ -61,17 +62,17 @@ export function AvatarEditor() {
     if (!file) return
     let foto: string
     try { foto = await fotoParaDataUrl(file) } catch { return }
-    await processar({ mensagem: "Enviando a foto", duracao: 3000, acao: "avatar-set", args: { foto } })
+    await processar({ mensagem: t("Enviando a foto", "Uploading the photo"), duracao: 3000, acao: "avatar-set", args: { foto } })
     marcarAvatarMudou()
   }
   const remover = async () => {
-    await processar({ mensagem: "Removendo a foto", duracao: 2000, acao: "avatar-rm" })
+    await processar({ mensagem: t("Removendo a foto", "Removing the photo"), duracao: 2000, acao: "avatar-rm" })
     marcarAvatarMudou()
   }
 
   return (
     <div className="flex items-center gap-4">
-      <label className="group relative cursor-pointer rounded-full" aria-label="Trocar foto">
+      <label className="group relative cursor-pointer rounded-full" aria-label={t("Trocar foto", "Change photo")}>
         <Avatar size={80} />
         <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
           <Camera className="size-5 text-white" />
@@ -79,12 +80,12 @@ export function AvatarEditor() {
         <input type="file" accept="image/png,image/jpeg" className="sr-only" onChange={(e) => { escolher(e.target.files?.[0]); e.target.value = "" }} />
       </label>
       <div className="space-y-1">
-        <div className="text-sm font-medium">Foto do perfil</div>
+        <div className="text-sm font-medium">{t("Foto do perfil", "Profile photo")}</div>
         <div className="flex gap-3 text-xs">
-          <label className="cursor-pointer text-brand hover:underline">Enviar imagem
+          <label className="cursor-pointer text-brand hover:underline">{t("Enviar imagem", "Upload image")}
             <input type="file" accept="image/png,image/jpeg" className="sr-only" onChange={(e) => { escolher(e.target.files?.[0]); e.target.value = "" }} />
           </label>
-          {PERFIL.foto && <button className="text-muted-foreground hover:text-foreground hover:underline" onClick={remover}>Remover</button>}
+          {PERFIL.foto && <button className="text-muted-foreground hover:text-foreground hover:underline" onClick={remover}>{t("Remover", "Remove")}</button>}
         </div>
       </div>
     </div>
