@@ -526,8 +526,32 @@ AVISOS_SERVICO = {"avahi-daemon.service": "Desligado, opendongle.local para de f
                   "cron.service": "Tarefas agendadas do sistema (limpeza de logs etc.)."}
 
 
-def servicos():
-    """Serviços habilitados no boot ou rodando, com RAM (PSS) e se dá pra mexer."""
+UNIT_FILES_JSON = f"{RUN}/unit-files.json"
+# onde enable/disable/mask criam ou apagam links, e onde o apt instala units
+PASTAS_UNITS = ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+
+
+def _chave_units():
+    """Muda sempre que o estado de habilitação pode ter mudado: enable/disable
+    mexem nas pastas *.wants, mask cria link em /etc/systemd/system e o apt
+    mexe em /usr/lib/systemd/system — em todos os casos, o mtime de alguma
+    dessas pastas muda."""
+    pastas = list(PASTAS_UNITS) + glob.glob("/etc/systemd/system/*.wants")
+    return [os.stat(p).st_mtime_ns for p in sorted(pastas) if os.path.isdir(p)]
+
+
+def _habilitacao():
+    """{unit: enabled|disabled|static|...}. O 'systemctl list-unit-files' leva
+    de 2 a 5 s no dongle (varre todos os arquivos de unit), então o resultado
+    fica em /run até alguma pasta de units mudar."""
+    chave = _chave_units()
+    try:
+        with open(UNIT_FILES_JSON) as f:
+            cache = json.load(f)
+        if cache.get("chave") == chave:
+            return cache["habilitacao"]
+    except (OSError, ValueError, KeyError):
+        pass
     _, arquivos, _ = _run(["systemctl", "list-unit-files", "--type=service", "--no-legend",
                            "--no-pager"], 20)
     habilitacao = {}
@@ -535,6 +559,14 @@ def servicos():
         p = linha.split()
         if len(p) >= 2:
             habilitacao[p[0]] = p[1]
+    if habilitacao:
+        _gravar_json(UNIT_FILES_JSON, {"chave": chave, "habilitacao": habilitacao})
+    return habilitacao
+
+
+def servicos():
+    """Serviços habilitados no boot ou rodando, com RAM (PSS) e se dá pra mexer."""
+    habilitacao = _habilitacao()
     _, units, _ = _run(["systemctl", "list-units", "--type=service", "--all", "--no-legend",
                         "--no-pager", "--plain"], 20)
     ativos = {}

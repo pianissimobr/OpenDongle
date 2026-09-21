@@ -196,6 +196,12 @@ def _firewall():
                                   for r in fw.get("redirecionamentos", [])]}
 
 
+def servicos():
+    """Só a tela de Serviços usa, e é a leitura mais cara (systemctl): fica
+    fora do /api/tudo, que roda em toda página e depois de toda ação."""
+    return {"ok": True, "servicos": _servicos()}
+
+
 def _servicos():
     r = _seguro(sis.servicos, {"ok": False})
     if not r.get("ok"):
@@ -219,7 +225,6 @@ def dados():
         "firewall": _seguro(_firewall, {}),
         "leds": cfg["sistema"]["leds"],
         "hostname": cfg["sistema"]["hostname"],
-        "servicos": _seguro(_servicos, []),
         "tor": {"ativo": cfg["tor"]["ativo"]},
         "remoto": {"ativo": cfg["remoto"]["ativo"], "lan": cfg["remoto"]["lan"],
                    "saida": cfg["remoto"]["saida"]},

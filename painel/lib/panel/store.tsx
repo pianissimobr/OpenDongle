@@ -244,7 +244,6 @@ export type MockData = {
   }
   leds: Record<string, string>
   hostname: string
-  servicos: Servico[]
   tor: { ativo: boolean }
   remoto: { ativo: boolean; lan: boolean; saida: boolean }
   hora: { automatica: boolean; fuso: string; agora: string }
@@ -335,16 +334,6 @@ function dadosIniciais(): MockData {
     remoto: { ativo: false, lan: false, saida: false },
     hora: { automatica: true, fuso: "America/Sao_Paulo", agora: "" },
     hostname: "opendongle",
-    servicos: [
-      { nome: "bluetooth.service", habilitado: true, rodando: true, ramMb: 4.2, essencial: false, gerenciado: "", gerenciadoUrl: "", aviso: "" },
-      { nome: "avahi-daemon.service", habilitado: true, rodando: true, ramMb: 2.1, essencial: false, gerenciado: "", gerenciadoUrl: "", aviso: "Desligado, opendongle.local para de funcionar." },
-      { nome: "cron.service", habilitado: true, rodando: true, ramMb: 1.0, essencial: false, gerenciado: "", gerenciadoUrl: "", aviso: "" },
-      { nome: "tailscaled.service", habilitado: false, rodando: false, ramMb: 0.0, essencial: false, gerenciado: "Internet › Acesso remoto", gerenciadoUrl: "/remoto", aviso: "" },
-      { nome: "pipewire.service", habilitado: false, rodando: false, ramMb: 0.0, essencial: false, gerenciado: "Dispositivos › Áudio", gerenciadoUrl: "/audio", aviso: "" },
-      { nome: "opendongle.service", habilitado: true, rodando: true, ramMb: 8.5, essencial: true, gerenciado: "", gerenciadoUrl: "", aviso: "" },
-      { nome: "dnsmasq.service", habilitado: true, rodando: true, ramMb: 2.8, essencial: true, gerenciado: "", gerenciadoUrl: "", aviso: "" },
-      { nome: "hostapd@wlan0.service", habilitado: true, rodando: true, ramMb: 3.1, essencial: true, gerenciado: "", gerenciadoUrl: "", aviso: "" },
-    ],
   }
 }
 

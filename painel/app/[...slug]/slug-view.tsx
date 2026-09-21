@@ -10,7 +10,7 @@ import {
   Wrench, Zap, Bluetooth, Usb, Volume2, Radio, Clock3, Download,
 } from "lucide-react"
 import { Card, CardTitle, Field, Input, Select, Textarea, Btn, Notice, Pill, Row, RowGroup, Stat, MiniBar, Toggle, Segmented, PageHeader, Msg } from "@/components/panel/ui"
-import { usePanel, PERFIL, apiGet, type ResultadoAcao } from "@/lib/panel/store"
+import { usePanel, PERFIL, apiGet, type ResultadoAcao, type Servico } from "@/lib/panel/store"
 import { t } from "@/lib/panel/i18n"
 import { AvatarEditor } from "@/components/panel/avatar"
 import { cn } from "@/lib/utils"
@@ -328,9 +328,25 @@ function NomeBackupPage() {
   </div>
 }
 
+function ServicosPage() {
+  // a lista vem sob demanda: é a leitura mais cara do dongle (systemctl)
+  const { processar } = usePanel()
+  const { dados: r, carregando, recarregar } = useApi<{ ok: boolean; servicos: Servico[] }>("/api/servicos")
+  const [erro, setErro] = useState("")
+  const mudar = async (s: Servico, v: boolean) => {
+    setErro("")
+    const res = await processar({ mensagem: t((v ? "Ligando " : "Desligando ") + s.nome, (v ? "Starting " : "Stopping ") + s.nome), duracao: 4000, acao: "servico-set", args: { nome: s.nome, ligar: v } })
+    if (res && !res.ok) setErro(res.erro || t("Não mudou.", "It did not change."))
+    recarregar()
+  }
+  return <div className="space-y-6"><PageHeader icon={Server} title={t("Serviços do sistema", "System services")} desc={t("O que sobe no boot: ligar e desligar.", "What starts at boot: on and off.")}><GoBack /></PageHeader>
+    {erro ? <Msg tone="err">{erro}</Msg> : null}
+    <Card>{carregando && !r ? <p className="text-sm text-muted-foreground">{t("Carregando…", "Loading…")}</p> : !r?.ok ? <Msg tone="err">{t("Não foi possível ler os serviços.", "Could not read the services.")}</Msg> : <RowGroup>{r.servicos.map(s => <Row key={s.nome} icon={Server} title={s.nome} sub={t(`${s.ramMb.toFixed(1)} MB · ${s.rodando ? "rodando" : "parado"}`, `${s.ramMb.toFixed(1)} MB · ${s.rodando ? "running" : "stopped"}`)} action={s.essencial ? <Pill tone="neutral">{t("essencial", "essential")}</Pill> : <Toggle checked={s.habilitado} label="" onChange={(v) => mudar(s, v)} />} />)}</RowGroup>}</Card>
+  </div>
+}
+
 function AdvancedLeaf({ slug }: { slug: string }) {
-  const { dados, processar } = usePanel()
-  if (slug === "servicos") return <div className="space-y-6"><PageHeader icon={Server} title={t("Serviços do sistema", "System services")} desc={t("O que sobe no boot: ligar e desligar.", "What starts at boot: on and off.")}><GoBack /></PageHeader><Card><RowGroup>{dados.servicos.map(s => <Row key={s.nome} icon={Server} title={s.nome} sub={t(`${s.ramMb.toFixed(1)} MB · ${s.rodando ? "rodando" : "parado"}`, `${s.ramMb.toFixed(1)} MB · ${s.rodando ? "running" : "stopped"}`)} action={s.essencial ? <Pill tone="neutral">{t("essencial", "essential")}</Pill> : <Toggle checked={s.habilitado} label="" onChange={(v) => processar({ mensagem: t((v ? "Ligando " : "Desligando ") + s.nome, (v ? "Starting " : "Stopping ") + s.nome), duracao: 4000, acao: "servico-set", args: { nome: s.nome, ligar: v } })} />} />)}</RowGroup></Card></div>
+  if (slug === "servicos") return <ServicosPage />
   if (slug === "logs") return <LogsPage />
   if (slug === "diagnostico") return <DiagnosticoPage />
   if (slug === "kernel") return <KernelPage />

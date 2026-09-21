@@ -2177,6 +2177,8 @@ class Painel(BaseHTTPRequestHandler):
                 return self._api_json(eng.recursos)
             if path == "/api/kernel":
                 return self._api_json(sis.kernel)
+            if path == "/api/servicos":
+                return self._api_json(api.servicos)
             if path == "/api/diagnostico":
                 return self._api_json(diagnostico_json)
             if path == "/api/config-arquivo":
