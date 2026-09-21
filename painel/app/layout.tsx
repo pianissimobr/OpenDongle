@@ -32,11 +32,14 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: noFlash }} />
       </head>
       <body className="antialiased">
-        <I18nProvider>
-          <PanelProvider>
+        {/* Dados por fora do idioma: trocar a língua remonta só a interface
+            (key={lang} no I18nProvider). Por dentro, o provedor de dados
+            remontava junto e refazia /api/contexto e /api/tudo. */}
+        <PanelProvider>
+          <I18nProvider>
             <Shell>{children}</Shell>
-          </PanelProvider>
-        </I18nProvider>
+          </I18nProvider>
+        </PanelProvider>
       </body>
     </html>
   )

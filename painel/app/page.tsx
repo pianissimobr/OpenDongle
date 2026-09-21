@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { useEffect, useState } from "react"
 import { ArrowRight, Wifi, Radio, Gauge, Thermometer, HardDrive, Info, TriangleAlert, CircleCheck } from "lucide-react"
 import { CATEGORIAS, CAT_AJUDA } from "@/lib/panel/nav"
 import { CatIcon } from "@/components/panel/icon"
@@ -24,7 +25,12 @@ const SEV: Record<Severity, { color: string; Icon: typeof Info; tone: string }> 
 }
 
 export default function HomePage() {
-  const { estado, saude } = usePanel()
+  const { estado, saude, dados } = usePanel()
+  // A saudação depende da hora e do nome: calculada só no navegador. Na
+  // renderização valeria a hora do build no HTML pré-gerado ("Boa noite" se
+  // compilado à noite) e a hora atual no cliente — texto diferente, erro #418.
+  const [ola, setOla] = useState("")
+  useEffect(() => { setOla(saudacao()) }, [estado, dados])
   const rec = estado.recomendacao
   const online = estado.internet
   const ModoIcon = estado.modo === "wifi" ? Wifi : Radio
@@ -33,7 +39,7 @@ export default function HomePage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{saudacao()}</h1>
+          <h1 className="min-h-8 text-2xl font-semibold tracking-tight">{ola}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t("Aqui está um resumo do seu dongle.", "Here's a summary of your dongle.")}</p>
         </div>
         <Pill tone={online ? "ok" : "warn"}>
@@ -86,9 +92,9 @@ export default function HomePage() {
                 <Gauge className="size-3.5" /> {t("Memória RAM", "RAM memory")}
               </span>
             }
-            value={`${saude.ramPct}%`}
-            tone={saude.ramPct > 85 ? "err" : saude.ramPct > 70 ? "warn" : ""}
-            bar={saude.ramPct}
+            value={saude ? `${saude.ramPct}%` : "—"}
+            tone={!saude ? "" : saude.ramPct > 85 ? "err" : saude.ramPct > 70 ? "warn" : ""}
+            bar={saude?.ramPct ?? 0}
           />
         </Link>
         <Link href="/status" className="block transition-transform hover:-translate-y-0.5">
@@ -98,9 +104,9 @@ export default function HomePage() {
                 <Thermometer className="size-3.5" /> {t("Temperatura", "Temperature")}
               </span>
             }
-            value={`${saude.tempC}°`}
-            tone={saude.tempC > 70 ? "err" : saude.tempC > 60 ? "warn" : ""}
-            bar={(saude.tempC / 90) * 100}
+            value={saude ? `${saude.tempC}°` : "—"}
+            tone={!saude ? "" : saude.tempC > 70 ? "err" : saude.tempC > 60 ? "warn" : ""}
+            bar={saude ? (saude.tempC / 90) * 100 : 0}
           />
         </Link>
         <Link href="/espaco" className="block transition-transform hover:-translate-y-0.5">
@@ -110,8 +116,8 @@ export default function HomePage() {
                 <HardDrive className="size-3.5" /> {t("Disco", "Disk")}
               </span>
             }
-            value={`${saude.discoPct}%`}
-            bar={saude.discoPct}
+            value={saude ? `${saude.discoPct}%` : "—"}
+            bar={saude?.discoPct ?? 0}
           />
         </Link>
         <Link href="/internet" className="block transition-transform hover:-translate-y-0.5">

@@ -360,15 +360,6 @@ export function saudacao() {
 
 export type Saude = { ramPct: number; tempC: number; discoPct: number }
 
-export function saudeMock(): Saude {
-  const t = Date.now() / 1000
-  let ram = 62 + 12 * Math.sin(t / 20) + 3 * Math.sin(t / 3)
-  ram = Math.max(10, Math.min(95, ram))
-  let temp = 46 + 6 * Math.sin(t / 30) + 2 * Math.sin(t / 5)
-  temp = Math.max(35, Math.min(78, temp))
-  return { ramPct: Math.round(ram), tempC: Math.round(temp), discoPct: 34 }
-}
-
 /* ============================================================
    Overlay de processamento
    ============================================================ */
@@ -403,14 +394,16 @@ type Ctx = {
   }) => Promise<ResultadoAcao | undefined>
   /** Recarrega estado/dados/saúde do dongle. */
   recarregar: () => Promise<void>
-  saude: Saude
+  /** null até a primeira leitura do dongle */
+  saude: Saude | null
 }
 
 const PanelCtx = createContext<Ctx | null>(null)
 
 type ApiTudo = {
   estado: EstadoDongle
-  saude: Saude
+  /** null até a primeira leitura do dongle */
+  saude: Saude | null
   dados: MockData
   perfil: { nome: string; usuario: string; admin: boolean }
 }
@@ -460,7 +453,10 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const [avancadas, setAvancadas] = useState(false)
   const [dados, setDadosState] = useState<MockData>(dadosIniciais)
   const [overlay, setOverlay] = useState<Overlay>(null)
-  const [saude, setSaude] = useState<Saude>(saudeMock)
+  // Nada de número inventado antes da primeira leitura: a simulação antiga
+  // (seno do relógio) mostrava RAM/temperatura falsas e, por depender da hora,
+  // divergia do HTML pré-gerado no build (erro de hidratação #418).
+  const [saude, setSaude] = useState<Saude | null>(null)
   // estado real do dongle; começa no mock só pra primeira pintura não vir vazia
   const [estadoReal, setEstadoReal] = useState<EstadoDongle | null>(null)
   const overlayTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
