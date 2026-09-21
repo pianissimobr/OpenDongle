@@ -246,7 +246,7 @@ export type MockData = {
   hostname: string
   tor: { ativo: boolean }
   remoto: { ativo: boolean; lan: boolean; saida: boolean }
-  hora: { automatica: boolean; fuso: string; agora: string }
+  hora: { automatica: boolean; fuso: string; agora: string; sincronizada?: boolean }
 }
 
 function dadosIniciais(): MockData {
@@ -466,12 +466,20 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const overlayTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Recarrega tudo do dongle. Chamado no início e depois de cada ação.
+  const horaEnviada = useRef(false)
   const recarregar = async () => {
     const t = await apiGet<ApiTudo>("/api/tudo")
     if (!t) return
     setEstadoReal(t.estado)
     setDadosState(t.dados)
     setSaude(t.saude)
+    // Sem relógio com bateria e sem internet, o dongle liga atrasado o tempo que
+    // ficou desligado. O navegador tem a hora certa: manda uma vez, e o motor
+    // só aplica se o NTP ainda não sincronizou e a diferença passar de 1 min.
+    if (t.dados?.hora?.sincronizada === false && !horaEnviada.current) {
+      horaEnviada.current = true
+      apiAcao("hora-navegador", { epoch_ms: Date.now() })
+    }
     if (t.perfil) {
       PERFIL.nome = t.perfil.nome
       PERFIL.usuario = t.perfil.usuario

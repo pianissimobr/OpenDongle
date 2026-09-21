@@ -228,9 +228,11 @@ def dados():
         "tor": {"ativo": cfg["tor"]["ativo"]},
         "remoto": {"ativo": cfg["remoto"]["ativo"], "lan": cfg["remoto"]["lan"],
                    "saida": cfg["remoto"]["saida"]},
-        "hora": _seguro(lambda: {"automatica": cfg["sistema"]["hora_automatica"],
-                                 "fuso": cfg["sistema"]["fuso"],
-                                 "agora": sis.hora_status().get("agora", "")}, {}),
+        "hora": _seguro(lambda: (lambda h: {"automatica": cfg["sistema"]["hora_automatica"],
+                                            "fuso": cfg["sistema"]["fuso"],
+                                            "agora": h.get("agora", ""),
+                                            "sincronizada": h.get("sincronizada", False)})(
+                                                sis.hora_status()), {}),
     }
 
 
@@ -296,6 +298,7 @@ _ACOES = {
     "led-set": lambda a: eng.led_set(a["led"], a["gatilho"]),
     "hora-set": lambda a: eng.hora_set(bool(a.get("automatica", True)), a.get("fuso", "")),
     "hora-manual": lambda a: sis.hora_manual(a["data"], a["hora"]),
+    "hora-navegador": lambda a: sis.hora_do_navegador(a.get("epoch_ms")),
     "sistema-set": lambda a: eng.sistema_set(a.get("hostname", "")),
     "servico-set": lambda a: sis.servico_set(a["nome"], bool(a.get("ligar"))),
     "energia": lambda a: sis.energia(a["acao"]),

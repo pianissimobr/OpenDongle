@@ -152,6 +152,46 @@ def hora_manual(data, hora):
     return {"ok": True, "aviso": f"Hora ajustada para {quando.strftime('%d/%m/%Y %H:%M')}."}
 
 
+# O dongle não tem relógio com bateria: ao ligar, o timesyncd retoma do último
+# instante que salvou, e sem internet (hotspot sem uplink) fica atrasado o
+# tempo que passou desligado — visto: 16 min. Quem abre o painel traz a hora
+# certa no navegador (celular é sincronizado pela operadora).
+RELOGIO_TIMESYNCD = "/var/lib/systemd/timesync/clock"   # mtime = última hora boa
+TOLERANCIA_RELOGIO_S = 60
+
+
+def hora_do_navegador(epoch_ms):
+    """Acerta o relógio pela hora do navegador, só se o NTP ainda não
+    sincronizou. Recusa voltar para antes da última hora boa conhecida: um
+    aparelho com a hora errada não pode puxar o dongle pro passado."""
+    try:
+        alvo = float(epoch_ms) / 1000
+    except (TypeError, ValueError):
+        return {"ok": False, "erro": "Hora inválida."}
+    if hora_status()["sincronizada"]:
+        return {"ok": True, "mudou": False, "motivo": "já sincronizada pela internet"}
+    diferenca = alvo - time.time()
+    if abs(diferenca) < TOLERANCIA_RELOGIO_S:
+        return {"ok": True, "mudou": False, "motivo": "diferença pequena"}
+    try:
+        piso = os.path.getmtime(RELOGIO_TIMESYNCD)
+    except OSError:
+        piso = datetime(2025, 1, 1, tzinfo=dt_timezone.utc).timestamp()
+    if alvo < piso:
+        return {"ok": False, "erro": "A hora deste aparelho parece errada (anterior à "
+                "última hora conhecida do dongle); não ajustei."}
+    # 'date' e não 'timedatectl set-time': este recusa com o NTP ligado, e o
+    # NTP deve continuar ligado pra assumir quando houver internet
+    rc, _, err = _run(["date", "-u", "-s", f"@{alvo:.0f}"])
+    if rc != 0:
+        return {"ok": False, "erro": f"Não ajustou: {err[:120]}"}
+    try:
+        os.utime(RELOGIO_TIMESYNCD)     # o próximo boot já parte desta hora
+    except OSError:
+        pass
+    return {"ok": True, "mudou": True, "ajuste_s": round(diferenca)}
+
+
 # --------------------------------------------------------------- CONTA
 def sessoes():
     """Sessões abertas no sistema (SSH e console serial)."""
