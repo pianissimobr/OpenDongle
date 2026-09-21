@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Signal } from "lucide-react"
-import { PageHeader, Card, CardTitle, Row, RowGroup, Field, Input, Btn, Pill, Msg, MiniBar } from "@/components/panel/ui"
+import { PageHeader, Card, CardTitle, Row, RowGroup, Field, Input, Btn, Pill, Msg, MiniBar, Notice } from "@/components/panel/ui"
 import { usePanel } from "@/lib/panel/store"
 import { t } from "@/lib/panel/i18n"
 
@@ -34,6 +34,15 @@ export default function ModemPage() {
         <Pill tone={m.registrado ? "ok" : "warn"}>{m.registrado ? t("Registrado", "Registered") : t("Sem registro", "Not registered")}</Pill>
       </PageHeader>
 
+      {m.diagnostico ? (
+        <Notice tone={m.firmwareOk ? "info" : "warn"}>
+          {m.firmwareOk
+            ? m.diagnostico
+            : t("O firmware do modem não está instalado neste dongle: a partição de rádio está vazia. O chip é lido, mas não há sinal nem internet pelo 4G — é preciso restaurar o backup das partições do modem.",
+                "This dongle has no modem firmware installed: the radio partition is empty. The SIM is read, but there is no signal and no 4G internet — the modem partitions must be restored from a backup.")}
+        </Notice>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardTitle>{t("Status da conexão", "Connection status")}</CardTitle>
@@ -63,7 +72,7 @@ export default function ModemPage() {
             <Btn variant="primary" className="w-full" disabled={!apn} onClick={async () => { await processar({ mensagem: t("Salvando o APN", "Saving the APN"), duracao: 6000, acao: "modem-apn", args: { apn } }); setMsg(t("APN salvo. Toque em Reconectar 4G para aplicar agora.", "APN saved. Tap Reconnect 4G to apply it now.")) }}>
               {t("Salvar APN", "Save APN")}
             </Btn>
-            <Btn variant="secondary" className="w-full" onClick={() => processar({ mensagem: t("Reconectando o 4G", "Reconnecting 4G"), duracao: 15000, acao: "modem-reconectar" })}>
+            <Btn variant="secondary" className="w-full" disabled={!m.firmwareOk} onClick={() => processar({ mensagem: t("Reconectando o 4G", "Reconnecting 4G"), duracao: 15000, acao: "modem-reconectar" })}>
               {t("Reconectar 4G", "Reconnect 4G")}
             </Btn>
             {msg ? <Msg>{msg}</Msg> : null}

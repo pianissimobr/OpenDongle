@@ -158,11 +158,14 @@ def _modem():
     m = _seguro(eng.modem_status, {"presente": False})
     if not m.get("presente"):
         return {"presente": False, "simPresente": False, "registrado": False,
-                "operadora": "", "rssiDbm": 0, "modoOperacao": "", "imei": ""}
+                "operadora": "", "rssiDbm": 0, "modoOperacao": "", "imei": "",
+                "firmwareOk": True, "diagnostico": ""}
+    fw = m.get("firmware_ok")
     return {"presente": True, "simPresente": m.get("sim_presente", False),
             "registrado": m.get("registrado", False), "operadora": m.get("operadora", ""),
             "rssiDbm": m.get("rssi_dbm") or 0, "modoOperacao": m.get("modo_operacao", ""),
-            "imei": m.get("imei", ""), "mccMnc": m.get("mcc_mnc", "")}
+            "imei": m.get("imei", ""), "mccMnc": m.get("mcc_mnc", ""),
+            "firmwareOk": fw is not False, "diagnostico": m.get("diagnostico", "")}
 
 
 def _lan():

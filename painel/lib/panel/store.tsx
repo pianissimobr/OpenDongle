@@ -217,6 +217,8 @@ export type MockData = {
     rssiDbm: number
     modoOperacao: string
     imei: string
+    firmwareOk: boolean
+    diagnostico: string
   }
   lan: {
     ip: string
@@ -297,6 +299,8 @@ function dadosIniciais(): MockData {
       rssiDbm: -72,
       modoOperacao: "online",
       imei: "354289072345678",
+      firmwareOk: true,
+      diagnostico: "",
     },
     lan: {
       ip: "192.168.100.1",

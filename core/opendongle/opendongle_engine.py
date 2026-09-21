@@ -1187,6 +1187,37 @@ def _campo(saida, rotulo):
     return None
 
 
+def _particao_por_nome(nome):
+    """Caminho do /dev da partição com esse PARTNAME (a numeração varia
+    entre revisões, então nunca chutamos mmcblk0pN)."""
+    for uevent in glob.glob("/sys/block/*/*/uevent"):
+        try:
+            with open(uevent) as f:
+                campos = dict(l.strip().split("=", 1) for l in f if "=" in l)
+        except OSError:
+            continue
+        if campos.get("PARTNAME") == nome and campos.get("DEVNAME"):
+            return "/dev/" + campos["DEVNAME"]
+    return None
+
+
+def modem_firmware_ok():
+    """False quando a partição 'modem' está vazia (zerada): sem ela o
+    msm-firmware-loader não monta nada, o DSP não recebe firmware e o modem
+    sobe em 'factory-test' — SIM é lido, mas não há rádio. Acontece quando o
+    flash da imagem passa por cima das partições de rádio sem restaurá-las.
+    None = não deu pra saber (sem permissão ou partição ausente)."""
+    dev = _particao_por_nome("modem")
+    if not dev:
+        return None
+    try:
+        with open(dev, "rb") as f:
+            amostra = f.read(65536)
+    except OSError:
+        return None
+    return any(amostra)      # só zeros = firmware apagado
+
+
 def modem_status():
     """Só leitura via QMI — nunca mexe no rádio. Trata a ausência de SIM
     (texto real confirmado: "error: no-atr-received") como estado
@@ -1222,21 +1253,51 @@ def modem_status():
     imei = _campo(out, "IMEI")
 
     mcc_mnc = _home_mccmnc()
+    fw = modem_firmware_ok()
+    diagnostico = ""
+    if fw is False:
+        diagnostico = ("O firmware do modem não está instalado (a partição de "
+                       "rádio está vazia). O chip é lido, mas não há sinal. "
+                       "É preciso restaurar o backup das partições do modem.")
+    elif not registrado and modo_op and modo_op not in ("online",):
+        diagnostico = (f"O modem está em modo '{modo_op}', não em 'online' — "
+                       "por isso não procura rede.")
     return {"ok": True, "presente": True, "sim_presente": sim_presente,
-            "mcc_mnc": mcc_mnc,
+            "mcc_mnc": mcc_mnc, "firmware_ok": fw, "diagnostico": diagnostico,
             "modo_operacao": modo_op, "registrado": registrado,
             "operadora": operadora, "rssi_dbm": rssi, "imei": imei}
+
+
+def modem_online():
+    """Garante o rádio ligado: o modem pode subir em 'low-power'/'offline' e
+    aí nunca procura rede. Antes só líamos esse modo, nunca o corrigíamos."""
+    _, out, _ = _qmi(["--dms-get-operating-mode"])
+    modo = _campo(out, "Mode")
+    if modo == "online":
+        return {"ok": True, "mudou": False, "modo": modo}
+    if modem_firmware_ok() is False:
+        return {"ok": False, "erro": "Sem firmware de modem: não dá para ligar o rádio."}
+    rc, _, _ = _qmi(["--dms-set-operating-mode=online"])
+    if rc != 0:
+        return {"ok": False, "erro": f"Não consegui ligar o rádio (modo '{modo}')."}
+    return {"ok": True, "mudou": True, "modo": "online"}
 
 
 def modem_reconectar():
     """Reaplica o usb-role-autosense.sh inteiro — idempotente (grupos/BT/
     LEDs não têm efeito colateral de reaplicar) e refaz o setup 4G com a
-    tabela de APN atual."""
+    tabela de APN atual. Antes disso, garante o rádio ligado."""
+    if modem_firmware_ok() is False:
+        return {"ok": False, "erro": "O firmware do modem não está instalado "
+                "(partição de rádio vazia). Restaure o backup das partições do "
+                "modem — sem isso não há 4G."}
+    r = modem_online()
     rc, _, err = _run(["systemctl", "restart", "usb-role-autosense.service"],
                       timeout=30)
     if rc != 0:
         return {"ok": False, "erro": f"Falha ao reiniciar: {err[:120]}"}
-    return {"ok": True, "aviso": "Reconectando — pode levar alguns segundos."}
+    extra = " O rádio foi ligado." if r.get("mudou") else ""
+    return {"ok": True, "aviso": f"Reconectando — pode levar alguns segundos.{extra}"}
 
 
 def _home_mccmnc():
@@ -1562,6 +1623,7 @@ ACOES = {
     "avatar-rm": lambda a: avatar_rm(),
     "modem-apn": lambda a: modem_apn_auto(a.get("apn", "")),
     "modem-reconectar": lambda a: modem_reconectar(),
+    "modem-online": lambda a: modem_online(),
     "list-wifi": lambda a: listar_wifi(),
     "wifi-conhecidas": lambda a: redes_conhecidas(),
     "wifi-esquecer": lambda a: esquecer_rede(a.get("ssid")),

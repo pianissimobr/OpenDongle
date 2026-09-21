@@ -10,6 +10,9 @@ sudo opendongle status                              # modo, internet, hotspot
 sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
 sudo opendongle wifi --list                         # redes Wi-Fi visíveis
 sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
+sudo opendongle modem                               # chip, operadora, sinal e diagnóstico do 4G
+sudo opendongle modem --apn claro.com.br            # APN da operadora do chip atual
+sudo opendongle modem --reconectar                  # liga o rádio e refaz a conexão 4G
 sudo opendongle senha --nova umaSenhaForte          # troca a senha de admin
 sudo opendongle usuario --novo lucas                # troca o nome do usuário (mesmo UID, sudo e senha)
 sudo opendongle diagnostico                         # testa áudio, Bluetooth, vídeo USB e modem 4G

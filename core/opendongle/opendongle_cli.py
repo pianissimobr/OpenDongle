@@ -115,6 +115,12 @@ def main():
 
     sub.add_parser("mode-hotspot", help="volta ao modo ponto de acesso")
 
+    p = sub.add_parser("modem", help="estado do modem 4G, APN e reconexao")
+    p.add_argument("--reconectar", action="store_true",
+                   help="liga o radio e refaz a conexao 4G")
+    p.add_argument("--apn", metavar="APN",
+                   help="grava um APN para o operador do chip atual")
+
     p = sub.add_parser("senha", help="troca a senha de administração")
     p.add_argument("--nova", required=True)
 
@@ -262,6 +268,13 @@ def main():
             res = eng.connect_wifi(args.ssid, args.senha)
     elif args.cmd == "mode-hotspot":
         res = eng.mode_hotspot()
+    elif args.cmd == "modem":
+        if args.apn:
+            res = eng.modem_apn_auto(args.apn)
+        elif args.reconectar:
+            res = eng.modem_reconectar()
+        else:
+            res = eng.modem_status()
     elif args.cmd == "senha":
         res = eng.set_password(args.nova)
     elif args.cmd == "usuario":
