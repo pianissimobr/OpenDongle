@@ -227,6 +227,26 @@ o caso mais comum), `usb1` nunca existe de verdade; o
 quando detecta esse cenário. Isso é cosmético (não bloqueia nada — a
 bridge sobe igual só com `usb0`), mas evita um aviso confuso nos logs.
 
+### O console serial mostra `AT` ou "Login incorrect" sozinho (PC com Linux)
+
+É o **ModemManager do PC**, não o dongle. O console serial pela USB
+(`/dev/ttyACM0`) se anuncia como porta CDC-ACM "de comandos AT" — o
+gadget do Linux não deixa mudar isso —, então a cada vez que o dongle é
+plugado o ModemManager manda `AT` pra ver se é um modem. No dongle, isso
+cai no prompt de login como se alguém digitasse o usuário `AT` (no
+journal: `FAILED LOGIN ... FROM ttyGS0 FOR AT`). Dá pra conferir no PC:
+```
+udevadm info -q property -n /dev/ttyACM0 | grep ID_MM_CANDIDATE   # =1: vai ser testado
+```
+Pra o ModemManager deixar o dongle em paz (`1d6b:0104` é o ID genérico
+de gadget USB do Linux; nenhum modem de verdade usa):
+```
+echo 'ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ENV{ID_MM_DEVICE_IGNORE}="1"' \
+  | sudo tee /etc/udev/rules.d/77-opendongle-mm-ignore.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+Depois é só replugar o dongle.
+
 ---
 
 ## <a name="ssh"></a>🔑 SSH pedindo senha o tempo todo

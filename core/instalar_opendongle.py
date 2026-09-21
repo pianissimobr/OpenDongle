@@ -352,7 +352,17 @@ def main():
         "mkdir -p /etc/systemd/system/getty@ttyGS0.service.d && "
         "cat > /etc/systemd/system/getty@ttyGS0.service.d/10-opendongle-login.conf << \"EOF\"\n"
         + SERIAL_LOGIN_CONF + "EOF\n"
-        "systemctl daemon-reload && systemctl try-restart getty@ttyGS0.service\n"
+        # o mesmo na serial da placa (UART, pontos de teste TX/RX). A imagem
+        # deixa ali um override.conf com --autologin root que nem funciona: o
+        # -o '-p -- \\u' dele tira o -f do login, que pede senha, estoura o
+        # LOGIN_TIMEOUT de 60 s e o systemd religa — em loop, o boot inteiro.
+        # O override.conf precisa sair: pela ordem alfabética ele venceria o nosso.
+        "rm -f /etc/systemd/system/serial-getty@ttyMSM0.service.d/override.conf && "
+        "mkdir -p /etc/systemd/system/serial-getty@ttyMSM0.service.d && "
+        "cat > /etc/systemd/system/serial-getty@ttyMSM0.service.d/10-opendongle-login.conf << \"EOF\"\n"
+        + SERIAL_LOGIN_CONF + "EOF\n"
+        "systemctl daemon-reload && systemctl try-restart getty@ttyGS0.service "
+        "serial-getty@ttyMSM0.service\n"
         "python3 /opt/opendongle/opendongle_cli.py config aplicar "
         "|| echo \"aviso: config central nao aplicou (veja a mensagem acima)\"\n"
         "systemctl daemon-reload && "
