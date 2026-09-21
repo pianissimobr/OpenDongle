@@ -31,3 +31,9 @@ known_hosts
 
 # Sessões do teste de campo (logs do dongle, dados pessoais)
 testes/
+
+# Backups de rádio por IMEI (ferramentas/backup_radio.py): binários com a
+# calibração e a identidade de cada aparelho — nunca no git. Só o LEIAME vai.
+!backups-radio/
+backups-radio/*
+!backups-radio/LEIAME.md
