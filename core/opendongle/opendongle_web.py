@@ -1592,13 +1592,16 @@ def rodar_diagnostico():
         resultados = []
     for res in resultados:
         ULTIMO_DIAG[res["nome"]] = {"status": res["status"],
-            "detalhe": res["detalhe"], "quando": time.time()}
+            "detalhe": res["detalhe"], "quando": time.time(),
+            "nome_en": res.get("nome_en", res["nome"]),
+            "detalhe_en": res.get("detalhe_en", res["detalhe"])}
     return bool(resultados)
 
 
 def diagnostico_json():
     return {"ok": True, "resultados": [
-        {"nome": nome, "status": r["status"], "detalhe": r["detalhe"], "quando": r["quando"]}
+        {"nome": nome, "status": r["status"], "detalhe": r["detalhe"], "quando": r["quando"],
+         "nomeEn": r.get("nome_en", nome), "detalheEn": r.get("detalhe_en", r["detalhe"])}
         for nome, r in ULTIMO_DIAG.items()]}
 
 

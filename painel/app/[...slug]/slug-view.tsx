@@ -173,7 +173,7 @@ function LogsPage() {
   </div>
 }
 
-type ResultadoDiag = { nome: string; status: "ok" | "falha" | "nao_testavel"; detalhe: string; quando: number }
+type ResultadoDiag = { nome: string; status: "ok" | "falha" | "nao_testavel"; detalhe: string; quando: number; nomeEn?: string; detalheEn?: string }
 
 function DiagnosticoPage() {
   const { processar } = usePanel()
@@ -195,7 +195,7 @@ function DiagnosticoPage() {
       <CardTitle hint={quando ? t(`última vez: ${new Date(quando * 1000).toLocaleString("pt-BR")}`, `last run: ${new Date(quando * 1000).toLocaleString("en-US")}`) : undefined}>{t("Resultados", "Results")}</CardTitle>
       {carregando && !resultados ? <p className="text-sm text-muted-foreground">{t("Carregando…", "Loading…")}</p>
         : lista.length === 0 ? <p className="text-sm text-muted-foreground">{t("Ainda não rodado desde que o dongle ligou.", "Not run yet since the dongle started.")}</p>
-        : <RowGroup>{lista.map((x) => <Row key={x.nome} title={x.nome} sub={x.detalhe} action={<Pill tone={tom[x.status] ?? "neutral"}>{rotulo[x.status] ?? x.status}</Pill>} />)}</RowGroup>}
+        : <RowGroup>{lista.map((x) => <Row key={x.nome} title={t(x.nome, x.nomeEn ?? x.nome)} sub={t(x.detalhe, x.detalheEn ?? x.detalhe)} action={<Pill tone={tom[x.status] ?? "neutral"}>{rotulo[x.status] ?? x.status}</Pill>} />)}</RowGroup>}
       <div className="mt-4 flex flex-wrap items-center gap-3"><Btn size="sm" variant="primary" onClick={rodar}><Stethoscope className="size-3.5" /> {t("Rodar diagnóstico completo", "Run full diagnostics")}</Btn>{erro ? <Msg tone="err">{erro}</Msg> : null}</div>
     </Card>
   </div>

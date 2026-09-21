@@ -34,7 +34,10 @@ import sys
 import time
 import tty
 
-AT_DEV = "/dev/wwan0at0"
+# O modem expõe duas portas AT (wwan0at0 e wwan0at1) e o firmware pode fechar
+# uma delas com o modem no ar — visto: a at0 sumiu sob rajada de qmicli, e a
+# at1 seguiu respondendo. Usa a primeira que existir.
+AT_PORTAS = "/dev/wwan0at*"
 QMI_DEV = "/dev/wwan0qmi0"
 AUDIO_TMP = "/tmp/opendongle_diag_audio.raw"
 
@@ -50,18 +53,24 @@ def _run(cmd, timeout=10, entrada=None):
         return 127, "", f"comando não encontrado: {cmd[0]}"
 
 
+def _porta_at():
+    portas = sorted(glob.glob(AT_PORTAS))
+    return portas[0] if portas else ""
+
+
 def _at(cmd, espera=3):
     """Envia um comando AT pro modem e devolve a resposta (raw, sem
     dependências: só abre o tty e lê/escreve). Nunca trava — timeout
     interno (alarm) + externo."""
-    if not os.path.exists(AT_DEV):
+    porta = _porta_at()
+    if not porta:
         return ""
     def _al(*_a):
         raise TimeoutError
     anterior = signal.signal(signal.SIGALRM, _al)
     signal.alarm(int(espera) + 2)
     try:
-        fd = os.open(AT_DEV, os.O_RDWR)
+        fd = os.open(porta, os.O_RDWR)
         tty.setraw(fd)
         try:
             time.sleep(0.2)
@@ -98,13 +107,14 @@ def _pronto(fd, timeout):
 def teste_audio():
     if not (shutil.which("arecord") and shutil.which("aplay")
             and shutil.which("speaker-test")):
-        return "nao_testavel", "alsa-utils não instalado"
+        return "nao_testavel", ("alsa-utils não instalado", "alsa-utils not installed")
 
     _run(["modprobe", "snd_aloop"])
     rc, out, _ = _run(["cat", "/proc/asound/cards"])
     m = re.search(r"^\s*(\d+)\s*\[Loopback", out or "", re.MULTILINE)
     if not m:
-        return "falha", "módulo snd_aloop não carregou (sem placa Loopback)"
+        return "falha", ("módulo snd_aloop não carregou (sem placa Loopback)",
+                          "snd_aloop module did not load (no Loopback card)")
     card = m.group(1)
     dev_play, dev_cap = f"hw:{card},0,0", f"hw:{card},1,0"
 
@@ -138,28 +148,33 @@ def teste_audio():
             pass
 
     if len(dados) < 1000:
-        return "falha", "loopback não gravou nada (pipeline ALSA quebrado)"
+        return "falha", ("loopback não gravou nada (pipeline ALSA quebrado)",
+                          "loopback recorded nothing (broken ALSA pipeline)")
     pico = max(
         (abs(int.from_bytes(dados[i:i + 2], "little", signed=True))
          for i in range(0, len(dados) - 1, 2)),
         default=0)
     if pico < 500:
-        return "falha", f"gravou só silêncio (pico={pico}/32767) — playback ou captura não conectam"
-    return "ok", f"loopback saída→entrada confirmado (pico={pico}/32767)"
+        return "falha", (f"gravou só silêncio (pico={pico}/32767) — playback ou captura não conectam",
+                          f"recorded only silence (peak={pico}/32767) — playback or capture not connected")
+    return "ok", (f"loopback saída→entrada confirmado (pico={pico}/32767)",
+                  f"output→input loopback confirmed (peak={pico}/32767)")
 
 
 # --------------------------------------------------------------- bluetooth
 def teste_bluetooth():
     if not shutil.which("hciconfig"):
-        return "nao_testavel", "bluez não instalado"
+        return "nao_testavel", ("bluez não instalado", "bluez not installed")
     _run(["rfkill", "unblock", "bluetooth"])
     _run(["hciconfig", "hci0", "up"], timeout=8)
     rc, out, _ = _run(["hciconfig", "hci0"], timeout=5)
     if rc != 0 or "hci0" not in out:
-        return "falha", "hci0 não existe (chip WCN3620/firmware não subiu)"
+        return "falha", ("hci0 não existe (chip WCN3620/firmware não subiu)",
+                          "hci0 does not exist (WCN3620 chip/firmware did not come up)")
     if "UP RUNNING" in out:
-        return "ok", "hci0 ligado (UP RUNNING)"
-    return "falha", f"hci0 existe mas não subiu: {out.splitlines()[0] if out else '?'}"
+        return "ok", ("hci0 ligado (UP RUNNING)", "hci0 up (UP RUNNING)")
+    primeira = out.splitlines()[0] if out else "?"
+    return "falha", (f"hci0 existe mas não subiu: {primeira}", f"hci0 exists but is not up: {primeira}")
 
 
 # --------------------------------------------------------------- vídeo USB
@@ -168,51 +183,63 @@ def teste_video():
     driver_ok = rc == 0
     dispositivos = sorted(glob.glob("/dev/video*"))
     if not dispositivos:
-        detalhe = ("nenhuma câmera USB conectada agora" +
-                   ("" if driver_ok else " (e o driver uvcvideo nem está disponível)"))
-        return "nao_testavel", detalhe
+        return "nao_testavel", (
+            "nenhuma câmera USB conectada agora" +
+            ("" if driver_ok else " (e o driver uvcvideo nem está disponível)"),
+            "no USB camera connected right now" +
+            ("" if driver_ok else " (and the uvcvideo driver is not even available)"))
     if not shutil.which("v4l2-ctl"):
-        return "nao_testavel", f"câmera em {dispositivos[0]}, mas v4l-utils não instalado"
+        return "nao_testavel", (f"câmera em {dispositivos[0]}, mas v4l-utils não instalado",
+                                f"camera at {dispositivos[0]}, but v4l-utils is not installed")
     rc, out, err = _run(
         ["v4l2-ctl", "-d", dispositivos[0], "--stream-mmap",
          "--stream-count=1", "--stream-to=/dev/null"], timeout=10)
     if rc == 0:
-        return "ok", f"capturou 1 frame de {dispositivos[0]}"
-    return "falha", f"{dispositivos[0]} não capturou: {(err or out)[:100]}"
+        return "ok", (f"capturou 1 frame de {dispositivos[0]}", f"captured 1 frame from {dispositivos[0]}")
+    return "falha", (f"{dispositivos[0]} não capturou: {(err or out)[:100]}",
+                      f"{dispositivos[0]} did not capture: {(err or out)[:100]}")
 
 
 # --------------------------------------------------------------- modem 4G
 def teste_modem():
-    if not (os.path.exists(AT_DEV) and os.path.exists(QMI_DEV)):
-        return "falha", "portas do modem não apareceram (firmware mpss não subiu)"
+    if not (_porta_at() and os.path.exists(QMI_DEV)):
+        return "falha", ("portas do modem não apareceram (firmware mpss não subiu)",
+                          "modem ports did not show up (mpss firmware did not come up)")
 
     resp = _at("ATI", 3)
     if "QUALCOMM" not in resp.upper() and "OK" not in resp.upper():
-        return "falha", "modem não respondeu a ATI (hardware/firmware com problema)"
+        return "falha", ("modem não respondeu a ATI (hardware/firmware com problema)",
+                          "modem did not answer ATI (hardware/firmware problem)")
 
     sim_resp = _at("AT+CIMI", 4)
     imsi = re.search(r"\d{14,15}", sim_resp)
     if imsi:
-        return "ok", f"modem responde, SIM detectado (IMSI {imsi.group()[:6]}…)"
-    return "ok", "modem responde (hardware OK); sem SIM inserido — internet 4G não testável agora"
+        return "ok", (f"modem responde, SIM detectado (IMSI {imsi.group()[:6]}…)",
+                      f"modem answers, SIM detected (IMSI {imsi.group()[:6]}…)")
+    return "ok", ("modem responde (hardware OK); sem SIM inserido — internet 4G não testável agora",
+                  "modem answers (hardware OK); no SIM inserted — 4G internet not testable right now")
 
 
+# (nome, nome em inglês, teste). Cada teste devolve (status, (pt, en)): o
+# relatório do terminal e a tela antiga usam o português; o painel escolhe.
 TESTES = [
-    ("áudio (loopback)", teste_audio),
-    ("bluetooth", teste_bluetooth),
-    ("vídeo USB (webcam)", teste_video),
-    ("modem 4G", teste_modem),
+    ("áudio (loopback)", "audio (loopback)", teste_audio),
+    ("bluetooth", "bluetooth", teste_bluetooth),
+    ("vídeo USB (webcam)", "USB video (webcam)", teste_video),
+    ("modem 4G", "4G modem", teste_modem),
 ]
 
 
 def rodar_tudo():
     resultados = []
-    for nome, fn in TESTES:
+    for nome, nome_en, fn in TESTES:
         try:
-            status, detalhe = fn()
+            status, (detalhe, detalhe_en) = fn()
         except Exception as e:
-            status, detalhe = "falha", f"erro inesperado no teste: {e}"
-        resultados.append({"nome": nome, "status": status, "detalhe": detalhe})
+            status, detalhe, detalhe_en = ("falha", f"erro inesperado no teste: {e}",
+                                           f"unexpected error in the test: {e}")
+        resultados.append({"nome": nome, "status": status, "detalhe": detalhe,
+                           "nome_en": nome_en, "detalhe_en": detalhe_en})
     return resultados
 
 
