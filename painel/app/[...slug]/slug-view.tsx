@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import {
   Activity, AudioLines, CalendarClock, Check, CircleHelp, Cpu, Database,
   FileJson, HardDrive, KeyRound, Lightbulb, ListTree, LockKeyhole,
@@ -9,8 +9,8 @@ import {
   ShieldCheck, Stethoscope, Terminal, Thermometer, UserRound, Wifi,
   Wrench, Zap, Bluetooth, Usb, Volume2, Radio, Clock3, Download,
 } from "lucide-react"
-import { Card, CardTitle, Field, Input, Select, Textarea, Btn, Notice, Pill, Row, RowGroup, Stat, MiniBar, Toggle, Segmented, PageHeader } from "@/components/panel/ui"
-import { usePanel, PERFIL, apiGet } from "@/lib/panel/store"
+import { Card, CardTitle, Field, Input, Select, Textarea, Btn, Notice, Pill, Row, RowGroup, Stat, MiniBar, Toggle, Segmented, PageHeader, Msg } from "@/components/panel/ui"
+import { usePanel, PERFIL, apiGet, type ResultadoAcao } from "@/lib/panel/store"
 import { t } from "@/lib/panel/i18n"
 import { AvatarEditor } from "@/components/panel/avatar"
 import { cn } from "@/lib/utils"
@@ -133,21 +133,209 @@ function DataPage({ slug }: { slug: string }) {
       desc: t("Defina como as luzes do dongle se comportam.", "Set how the dongle's lights behave."),
       body: <RowGroup>{Object.entries(dados.leds).map(([id, value]) => <Row key={id} icon={Lightbulb} title={id.replace(":", " · ")} sub={t("Comportamento da luz", "Light behavior")} action={<Select defaultValue={value} onChange={(e) => processar({ mensagem: t("Ajustando " + id, "Adjusting " + id), duracao: 1500, acao: "led-set", args: { led: id, gatilho: e.target.value } })}><option value="auto">{t("Automático (OpenDongle)", "Automatic (OpenDongle)")}</option><option value="none">{t("Apagado", "Off")}</option><option value="default-on">{t("Aceso", "On")}</option><option value="heartbeat">{t("Piscando", "Blinking")}</option></Select>} />)}</RowGroup>,
     },
-    "nome-backup": {
-      title: t("Nome, backup e reset", "Name, backup and reset"),
-      desc: t("Identidade do aparelho, cópia e restauração.", "Device identity, backup and restore."),
-      body: <><Field label={t("Nome do dongle", "Dongle name")}><Input defaultValue="OpenDongle" /></Field><div className="mt-4 flex flex-wrap gap-2"><Btn size="sm">{t("Salvar nome", "Save name")}</Btn><Btn size="sm" variant="secondary"><Download className="size-3.5" /> {t("Baixar backup da configuração", "Download config backup")}</Btn><Btn size="sm" variant="secondary">{t("Restaurar backup", "Restore backup")}</Btn></div><Notice>{t("Voltar à configuração de fábrica apaga as credenciais e configurações atuais.", "Restoring factory settings erases the current credentials and settings.")}</Notice><Btn size="sm" variant="danger">{t("Voltar à configuração de fábrica", "Restore factory settings")}</Btn></>,
-    },
   }
   const page = generic[slug]
   return <div className="space-y-6"><PageHeader icon={Icon} title={page?.title ?? slug} desc={page?.desc ?? t("Configuração do OpenDongle.", "OpenDongle configuration.")}><GoBack /></PageHeader><Card>{page?.body ?? <><CardTitle>{t("Configuração", "Configuration")}</CardTitle><p className="text-sm text-muted-foreground">{t("Esta área reúne as opções avançadas do dongle.", "This area gathers the dongle's advanced options.")}</p></>}</Card></div>
 }
 
+/* ---------- telas avançadas (dados reais do motor) ---------- */
+
+const UNIDADES_LOG: [string, [string, string]][] = [
+  ["", ["Sistema inteiro", "Whole system"]],
+  ["opendongle", ["OpenDongle (guarda, LEDs, descoberta)", "OpenDongle (guard, LEDs, discovery)"]],
+  ["painel", ["Painel web", "Web panel"]],
+  ["dnsmasq", ["DHCP e DNS (dnsmasq)", "DHCP and DNS (dnsmasq)"]],
+  ["hostapd", ["Hotspot (hostapd)", "Hotspot (hostapd)"]],
+  ["wifi-cliente", ["Wi-Fi cliente (wpa_supplicant)", "Wi-Fi client (wpa_supplicant)"]],
+  ["rede", ["Rede (systemd-networkd)", "Network (systemd-networkd)"]],
+  ["usb-4g", ["USB e 4G (usb-role-autosense)", "USB and 4G (usb-role-autosense)"]],
+]
+
+function Carregando() { return <Card><p className="text-sm text-muted-foreground">{t("Carregando…", "Loading…")}</p></Card> }
+function Falhou({ erro }: { erro?: string }) { return <Card><Msg tone="err">{erro || t("Não foi possível ler os dados do dongle.", "Could not read data from the dongle.")}</Msg></Card> }
+
+function LogsPage() {
+  const [unidade, setUnidade] = useState("")
+  const { dados: r, carregando, recarregar } = useApi<{ ok: boolean; texto?: string; erro?: string }>(`/api/logs?u=${encodeURIComponent(unidade)}`)
+  const fim = useRef<HTMLPreElement>(null)
+  // o mais recente fica embaixo: rola até lá a cada leitura
+  useEffect(() => { if (fim.current) fim.current.scrollTop = fim.current.scrollHeight }, [r])
+  return <div className="space-y-6"><PageHeader icon={Terminal} title={t("Logs do sistema", "System logs")} desc={t("As últimas 200 linhas do journal desde o boot.", "The last 200 journal lines since boot.")}><GoBack /></PageHeader>
+    <Card>
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <Field label={t("Serviço", "Service")}><Select value={unidade} onChange={(e) => setUnidade(e.target.value)}>{UNIDADES_LOG.map(([id, [pt, en]]) => <option key={id} value={id}>{t(pt, en)}</option>)}</Select></Field>
+        <Btn size="sm" variant="secondary" onClick={recarregar} disabled={carregando}><RefreshCw className={cn("size-3.5", carregando && "animate-spin")} /> {t("Atualizar", "Refresh")}</Btn>
+      </div>
+      {carregando && !r ? <p className="text-sm text-muted-foreground">{t("Carregando…", "Loading…")}</p>
+        : !r?.ok ? <Msg tone="err">{r?.erro || t("Não foi possível ler o log.", "Could not read the log.")}</Msg>
+        : <pre ref={fim} className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-4 font-mono text-[11px] leading-5 text-muted-foreground">{r.texto?.trim() || t("(nenhuma linha)", "(no lines)")}</pre>}
+    </Card>
+  </div>
+}
+
+type ResultadoDiag = { nome: string; status: "ok" | "falha" | "nao_testavel"; detalhe: string; quando: number }
+
+function DiagnosticoPage() {
+  const { processar } = usePanel()
+  const { dados: inicial, carregando } = useApi<{ ok: boolean; resultados: ResultadoDiag[] }>("/api/diagnostico")
+  const [resultados, setResultados] = useState<ResultadoDiag[] | null>(null)
+  const [erro, setErro] = useState("")
+  const lista = resultados ?? inicial?.resultados ?? []
+  const quando = lista.length ? Math.max(...lista.map((x) => x.quando)) : 0
+  const tom = { ok: "ok", falha: "err", nao_testavel: "neutral" } as const
+  const rotulo = { ok: t("ok", "ok"), falha: t("falhou", "failed"), nao_testavel: t("não testável", "not testable") }
+  const rodar = async () => {
+    setErro("")
+    const res = await processar({ mensagem: t("Rodando o diagnóstico", "Running diagnostics"), detalhe: t("Áudio, Bluetooth, vídeo USB e modem — até 30 segundos.", "Audio, Bluetooth, USB video and modem — up to 30 seconds."), duracao: 20000, acao: "diagnostico-rodar" })
+    if (res?.ok) setResultados((res.resultados as ResultadoDiag[]) ?? [])
+    else setErro(res?.erro || t("O diagnóstico falhou.", "Diagnostics failed."))
+  }
+  return <div className="space-y-6"><PageHeader icon={Stethoscope} title={t("Diagnóstico de hardware", "Hardware diagnostics")} desc={t("Testa de verdade cada componente e diz o que funciona.", "Actually tests each component and reports what works.")}><GoBack /></PageHeader>
+    <Card>
+      <CardTitle hint={quando ? t(`última vez: ${new Date(quando * 1000).toLocaleString("pt-BR")}`, `last run: ${new Date(quando * 1000).toLocaleString("en-US")}`) : undefined}>{t("Resultados", "Results")}</CardTitle>
+      {carregando && !resultados ? <p className="text-sm text-muted-foreground">{t("Carregando…", "Loading…")}</p>
+        : lista.length === 0 ? <p className="text-sm text-muted-foreground">{t("Ainda não rodado desde que o dongle ligou.", "Not run yet since the dongle started.")}</p>
+        : <RowGroup>{lista.map((x) => <Row key={x.nome} title={x.nome} sub={x.detalhe} action={<Pill tone={tom[x.status] ?? "neutral"}>{rotulo[x.status] ?? x.status}</Pill>} />)}</RowGroup>}
+      <div className="mt-4 flex flex-wrap items-center gap-3"><Btn size="sm" variant="primary" onClick={rodar}><Stethoscope className="size-3.5" /> {t("Rodar diagnóstico completo", "Run full diagnostics")}</Btn>{erro ? <Msg tone="err">{erro}</Msg> : null}</div>
+    </Card>
+  </div>
+}
+
+type Modulo = { nome: string; kb: number; usos: number; usado_por: string[] }
+
+function KernelPage() {
+  const { dados: k, carregando } = useApi<{ ok: boolean; versao: string; build: string; arquitetura: string; cmdline: string; modulos: Modulo[]; no_boot: string[] }>("/api/kernel")
+  const [filtro, setFiltro] = useState("")
+  if (carregando) return <div className="space-y-6"><PageHeader icon={Server} title={t("Kernel e módulos", "Kernel and modules")}><GoBack /></PageHeader><Carregando /></div>
+  if (!k?.ok) return <div className="space-y-6"><PageHeader icon={Server} title={t("Kernel e módulos", "Kernel and modules")}><GoBack /></PageHeader><Falhou /></div>
+  const f = filtro.trim().toLowerCase()
+  const mods = f ? k.modulos.filter((m) => m.nome.includes(f) || m.usado_por.some((u) => u.includes(f))) : k.modulos
+  return <div className="space-y-6"><PageHeader icon={Server} title={t("Kernel e módulos", "Kernel and modules")} desc={t("Versão em uso, parâmetros de boot e o que está carregado.", "Running version, boot parameters and what is loaded.")}><GoBack /></PageHeader>
+    <Card><CardTitle>{t("Kernel", "Kernel")}</CardTitle><RowGroup cols={2}>
+      <Row title={t("Versão", "Version")} sub={`${k.versao} · ${k.arquitetura}`} />
+      <Row title="Build" sub={k.build} />
+    </RowGroup>
+      <p className="mb-1.5 mt-4 text-xs font-medium text-muted-foreground">{t("Parâmetros de boot", "Boot parameters")}</p>
+      <pre className="whitespace-pre-wrap break-all rounded-lg bg-muted p-3 font-mono text-[11px] leading-5 text-muted-foreground">{k.cmdline || "—"}</pre>
+      {k.no_boot.length ? <p className="mt-3 text-xs text-muted-foreground">{t("Carregados no boot por configuração:", "Loaded at boot by configuration:")} <span className="font-mono">{k.no_boot.join(", ")}</span></p> : null}
+    </Card>
+    <Card><CardTitle hint={t(`${mods.length} de ${k.modulos.length}`, `${mods.length} of ${k.modulos.length}`)}>{t("Módulos carregados", "Loaded modules")}</CardTitle>
+      <div className="relative mb-3 max-w-xs"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder={t("Filtrar módulos…", "Filter modules…")} className="pl-9" /></div>
+      <div className="max-h-[28rem] overflow-auto rounded-lg border border-border">
+        <table className="w-full text-left text-xs"><thead className="sticky top-0 bg-card text-muted-foreground"><tr><th className="px-3 py-2 font-medium">{t("Módulo", "Module")}</th><th className="px-3 py-2 text-right font-medium">KB</th><th className="px-3 py-2 font-medium">{t("Usado por", "Used by")}</th></tr></thead>
+          <tbody className="divide-y divide-border font-mono">{mods.map((m) => <tr key={m.nome}><td className="px-3 py-1.5">{m.nome}</td><td className="px-3 py-1.5 text-right tabular-nums">{m.kb}</td><td className="px-3 py-1.5 text-muted-foreground">{m.usado_por.join(", ") || "—"}</td></tr>)}</tbody>
+        </table>
+      </div>
+    </Card>
+  </div>
+}
+
+function RecursosPage() {
+  const { dados: r, carregando, recarregar } = useApi<{ ok: boolean; metrica: string; ram_total_kb: number; ram_disponivel_kb: number; servicos: { unit: string; kb: number }[] }>("/api/recursos")
+  const topo = <PageHeader icon={MemoryStick} title={t("Memória por serviço", "Memory per service")} desc={t("Quanto de RAM cada serviço usa agora.", "How much RAM each service is using right now.")}><GoBack /></PageHeader>
+  if (carregando && !r) return <div className="space-y-6">{topo}<Carregando /></div>
+  if (!r?.ok) return <div className="space-y-6">{topo}<Falhou /></div>
+  const mb = (kb: number) => kb / 1024
+  // abaixo de 0,5 MB é ruído (processos de passagem); a tela antiga cortava igual
+  const lista = r.servicos.filter((s) => s.kb >= 512)
+  const maior = Math.max(1, ...lista.map((s) => s.kb))
+  const usada = r.ram_total_kb - r.ram_disponivel_kb
+  return <div className="space-y-6">{topo}
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+      <Stat label={t("RAM total", "Total RAM")} value={`${mb(r.ram_total_kb).toFixed(0)} MB`} />
+      <Stat label={t("Em uso", "In use")} value={`${mb(usada).toFixed(0)} MB`} />
+      <Stat label={t("Disponível", "Available")} value={`${mb(r.ram_disponivel_kb).toFixed(0)} MB`} />
+    </div>
+    <Card><CardTitle hint={r.metrica}>{t("Serviços", "Services")}</CardTitle>
+      <div className="space-y-3">{lista.map((s) => <div key={s.unit}>
+        <div className="mb-1 flex items-baseline justify-between gap-3 text-sm"><span className="truncate font-mono text-xs">{s.unit}</span><span className="shrink-0 tabular-nums text-muted-foreground">{mb(s.kb).toFixed(1)} MB</span></div>
+        <MiniBar value={(s.kb / maior) * 100} />
+      </div>)}</div>
+      <div className="mt-4"><Btn size="sm" variant="secondary" onClick={recarregar} disabled={carregando}><RefreshCw className={cn("size-3.5", carregando && "animate-spin")} /> {t("Atualizar", "Refresh")}</Btn></div>
+    </Card>
+  </div>
+}
+
+function ConfigArquivoPage() {
+  const { dados: r, carregando } = useApi<{ ok: boolean; caminho: string; config: unknown; erro?: string }>("/api/config-arquivo")
+  const topo = <PageHeader icon={FileJson} title={t("Arquivo de configuração", "Configuration file")} desc={t("De onde o dongle gera DHCP, firewall, rede, hotspot e o resto.", "Where the dongle generates DHCP, firewall, network, hotspot and the rest from.")}><GoBack /></PageHeader>
+  if (carregando) return <div className="space-y-6">{topo}<Carregando /></div>
+  if (!r?.ok) return <div className="space-y-6">{topo}<Falhou erro={r?.erro} /></div>
+  return <div className="space-y-6">{topo}
+    <Card><CardTitle hint={r.caminho}>config.json</CardTitle>
+      <pre className="max-h-[32rem] overflow-auto rounded-lg bg-muted p-4 font-mono text-[11px] leading-5 text-muted-foreground">{JSON.stringify(r.config, null, 2)}</pre>
+      <p className="mt-3 text-xs text-muted-foreground">{t("As senhas de Wi-Fi aparecem ocultas. Para mudar pelo terminal:", "Wi-Fi passwords are hidden. To change it from the terminal:")} <code className="font-mono">sudo opendongle config set chave=valor</code></p>
+      <div className="mt-4"><a href="/api/backup" download><Btn size="sm" variant="secondary"><Download className="size-3.5" /> {t("Baixar backup completo (com senhas)", "Download full backup (with passwords)")}</Btn></a></div>
+    </Card>
+  </div>
+}
+
+// mesmo padrão que o motor valida (opendongle_config.RE_HOSTNAME)
+const RE_HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+
+function NomeBackupPage() {
+  const { dados, processar } = usePanel()
+  const [nome, setNome] = useState(dados.hostname)
+  const [msgNome, setMsgNome] = useState<{ tone: "ok" | "err"; texto: string } | null>(null)
+  const [msgBackup, setMsgBackup] = useState<{ tone: "ok" | "err"; texto: string } | null>(null)
+  const [confirmaReset, setConfirmaReset] = useState(false)
+  const arquivo = useRef<HTMLInputElement>(null)
+  useEffect(() => { setNome(dados.hostname) }, [dados.hostname])
+  const nomeValido = RE_HOSTNAME.test(nome)
+  const resposta = (res: ResultadoAcao | undefined, okPadrao: string) =>
+    res?.ok ? { tone: "ok" as const, texto: res.aviso || okPadrao } : { tone: "err" as const, texto: res?.erro || t("Não deu certo.", "It did not work.") }
+
+  const salvarNome = async () => {
+    setMsgNome(null)
+    const res = await processar({ mensagem: t("Aplicando o nome", "Applying the name"), duracao: 4000, acao: "sistema-set", args: { hostname: nome } })
+    setMsgNome(resposta(res, t("Nome aplicado.", "Name applied.")))
+  }
+  const restaurar = async (f: File) => {
+    setMsgBackup(null)
+    if (f.size > 256 * 1024) { setMsgBackup({ tone: "err", texto: t("Arquivo grande demais para ser um backup do OpenDongle.", "File too large to be an OpenDongle backup.") }); return }
+    const texto = await f.text()
+    const res = await processar({ mensagem: t("Restaurando o backup", "Restoring the backup"), detalhe: t("A rede pode reiniciar por alguns segundos.", "The network may restart for a few seconds."), duracao: 15000, acao: "restaurar", args: { texto } })
+    setMsgBackup(resposta(res, t("Backup restaurado e aplicado.", "Backup restored and applied.")))
+  }
+  const reset = async () => {
+    setConfirmaReset(false); setMsgBackup(null)
+    const res = await processar({ mensagem: t("Voltando à configuração de fábrica", "Restoring factory settings"), detalhe: t("O hotspot reinicia com o nome e a senha de fábrica.", "The hotspot restarts with the factory name and password."), duracao: 15000, acao: "reset" })
+    setMsgBackup(resposta(res, t("Configuração de fábrica aplicada.", "Factory settings applied.")))
+  }
+
+  return <div className="space-y-6"><PageHeader icon={Database} title={t("Nome, backup e reset", "Name, backup and reset")} desc={t("Identidade do aparelho, cópia e restauração da configuração.", "Device identity, configuration backup and restore.")}><GoBack /></PageHeader>
+    <Card><CardTitle>{t("Nome do dongle", "Dongle name")}</CardTitle>
+      <Field label={t("Nome na rede", "Network name")} hint={nomeValido || !nome ? t("Letras minúsculas, números e hífen. Aparece para os outros aparelhos da rede.", "Lowercase letters, numbers and hyphen. Shown to other devices on the network.") : t("Use só letras minúsculas, números e hífen (sem começar ou terminar com hífen).", "Use only lowercase letters, numbers and hyphen (not at the start or end).")}>
+        <Input value={nome} onChange={(e) => setNome(e.target.value.trim().toLowerCase())} maxLength={63} />
+      </Field>
+      <div className="mt-4 flex flex-wrap items-center gap-3"><Btn size="sm" variant="primary" disabled={!nomeValido || nome === dados.hostname} onClick={salvarNome}>{t("Salvar nome", "Save name")}</Btn>{msgNome ? <Msg tone={msgNome.tone}>{msgNome.texto}</Msg> : null}</div>
+    </Card>
+    <Card><CardTitle>{t("Backup da configuração", "Configuration backup")}</CardTitle>
+      <p className="text-sm text-muted-foreground">{t("Um arquivo JSON com rede, Wi-Fi (inclusive as senhas), firewall, APNs e LEDs. Guarde em lugar seguro. Usuário e senha de administração não entram.", "A JSON file with network, Wi-Fi (passwords included), firewall, APNs and LEDs. Keep it somewhere safe. The admin username and password are not included.")}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <a href="/api/backup" download><Btn size="sm" variant="secondary"><Download className="size-3.5" /> {t("Baixar backup", "Download backup")}</Btn></a>
+        <Btn size="sm" variant="secondary" onClick={() => arquivo.current?.click()}>{t("Restaurar backup…", "Restore backup…")}</Btn>
+        <input ref={arquivo} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) restaurar(f) }} />
+      </div>
+      {msgBackup ? <div className="mt-4"><Msg tone={msgBackup.tone}>{msgBackup.texto}</Msg></div> : null}
+    </Card>
+    <Card><CardTitle>{t("Configuração de fábrica", "Factory settings")}</CardTitle>
+      <Notice>{t("Volta rede, Wi-Fi, firewall, APNs e LEDs ao padrão. O hotspot volta ao nome e à senha de fábrica — se você está conectado por ele, vai precisar reconectar. Usuário, senha de administração e foto não mudam.", "Resets network, Wi-Fi, firewall, APNs and LEDs to defaults. The hotspot goes back to the factory name and password — if you are connected through it, you will need to reconnect. The admin username, password and photo stay the same.")}</Notice>
+      <div className="mt-4 flex flex-wrap gap-2">{confirmaReset
+        ? <><Btn size="sm" variant="danger" onClick={reset}>{t("Sim, voltar à fábrica", "Yes, restore factory settings")}</Btn><Btn size="sm" variant="ghost" onClick={() => setConfirmaReset(false)}>{t("Cancelar", "Cancel")}</Btn></>
+        : <Btn size="sm" variant="danger" onClick={() => setConfirmaReset(true)}>{t("Voltar à configuração de fábrica", "Restore factory settings")}</Btn>}</div>
+    </Card>
+  </div>
+}
+
 function AdvancedLeaf({ slug }: { slug: string }) {
-  const { dados, processar } = usePanel(); const Icon = icons[slug] ?? Wrench
+  const { dados, processar } = usePanel()
   if (slug === "servicos") return <div className="space-y-6"><PageHeader icon={Server} title={t("Serviços do sistema", "System services")} desc={t("O que sobe no boot: ligar e desligar.", "What starts at boot: on and off.")}><GoBack /></PageHeader><Card><RowGroup>{dados.servicos.map(s => <Row key={s.nome} icon={Server} title={s.nome} sub={t(`${s.ramMb.toFixed(1)} MB · ${s.rodando ? "rodando" : "parado"}`, `${s.ramMb.toFixed(1)} MB · ${s.rodando ? "running" : "stopped"}`)} action={s.essencial ? <Pill tone="neutral">{t("essencial", "essential")}</Pill> : <Toggle checked={s.habilitado} label="" onChange={(v) => processar({ mensagem: t((v ? "Ligando " : "Desligando ") + s.nome, (v ? "Starting " : "Stopping ") + s.nome), duracao: 4000, acao: "servico-set", args: { nome: s.nome, ligar: v } })} />} />)}</RowGroup></Card></div>
-  const title = { logs: t("Logs do sistema", "System logs"), diagnostico: t("Diagnóstico de hardware", "Hardware diagnostics"), kernel: t("Kernel e módulos", "Kernel and modules"), recursos: t("Memória por serviço", "Memory per service"), "config-arquivo": t("Arquivo de configuração", "Configuration file") }[slug as string] ?? t("Opções avançadas", "Advanced options")
-  return <div className="space-y-6"><PageHeader icon={Icon} title={title} desc={t("Ferramenta de manutenção para investigação do sistema.", "Maintenance tool for inspecting the system.")}><GoBack /></PageHeader><Card><CardTitle>{slug === "logs" ? "journalctl" : slug === "diagnostico" ? t("Testes disponíveis", "Available tests") : t("Detalhes do sistema", "System details")}</CardTitle>{slug === "diagnostico" ? <RowGroup><Row icon={AudioLines} title={t("Saída de áudio", "Audio output")} sub={t("Teste de reprodução e microfone", "Playback and microphone test")} action={<Action label={t("Testar", "Test")} message={t("Testando áudio", "Testing audio")} />} /><Row icon={Bluetooth} title="Bluetooth" sub={t("Rádio e pareamento", "Radio and pairing")} action={<Action label={t("Testar", "Test")} message={t("Testando Bluetooth", "Testing Bluetooth")} />} /><Row icon={Usb} title={t("Vídeo USB", "USB video")} sub={t("Dispositivo de captura", "Capture device")} action={<Action label={t("Testar", "Test")} message={t("Testando vídeo USB", "Testing USB video")} />} /><Row icon={Radio} title={t("Modem 4G", "4G modem")} sub={t("SIM, registro e sinal", "SIM, registration and signal")} action={<Action label={t("Testar", "Test")} message={t("Testando modem", "Testing modem")} />} /></RowGroup> : slug === "logs" ? <><pre className="max-h-80 overflow-auto rounded-lg bg-muted p-4 text-xs leading-6 text-muted-foreground">{`2026-09-19 01:42:08 opendongle.service started\n2026-09-19 01:42:09 hostapd wlan0 ready\n2026-09-19 01:42:10 bluetooth.service connected Fone do Lucas\n2026-09-19 01:42:12 dnsmasq DHCP lease 192.168.100.10`}</pre><div className="mt-4"><Action label={t("Atualizar logs", "Refresh logs")} message={t("Atualizando logs", "Refreshing logs")} /></div></> : <><div className="rounded-lg bg-muted p-4 font-mono text-xs leading-6 text-muted-foreground">{slug === "kernel" ? "Linux 6.6.31 · arm64\nMódulos: qmi_wwan, btusb, snd_usb_audio" : slug === "recursos" ? "opendongle.service      8.5 MB\ndnsmasq.service         2.8 MB\nhostapd@wlan0.service   3.1 MB" : "{\n  \"network\": { \"mode\": \"hotspot\" },\n  \"services\": { \"bluetooth\": true }\n}"}</div><div className="mt-4"><Btn size="sm" variant="secondary">{t("Atualizar", "Refresh")}</Btn></div></>}</Card></div>
+  if (slug === "logs") return <LogsPage />
+  if (slug === "diagnostico") return <DiagnosticoPage />
+  if (slug === "kernel") return <KernelPage />
+  if (slug === "recursos") return <RecursosPage />
+  return <ConfigArquivoPage />
 }
 
 function BluetoothPage() {
@@ -209,8 +397,10 @@ function AtualizacoesPage() {
 function useApi<T>(rota: string, intervalo = 0) {
   const [dados, setDados] = useState<T | null>(null)
   const [carregando, setCarregando] = useState(true)
+  const [versao, setVersao] = useState(0)
   useEffect(() => {
     let vivo = true
+    setCarregando(true)
     const puxar = async () => { const d = await apiGet<T>(rota); if (vivo) { setDados(d); setCarregando(false) } }
     puxar()
     if (intervalo) {
@@ -218,8 +408,8 @@ function useApi<T>(rota: string, intervalo = 0) {
       return () => { vivo = false; clearInterval(id) }
     }
     return () => { vivo = false }
-  }, [rota, intervalo])
-  return { dados, carregando }
+  }, [rota, intervalo, versao])
+  return { dados, carregando, recarregar: () => setVersao((v) => v + 1) }
 }
 
 function StatusPage() {
@@ -337,6 +527,7 @@ export function SlugView({ slug }: { slug: string }) {
   if (slug === "desempenho") return <DesempenhoPage />
   if (slug === "espaco") return <EspacoPage />
   if (slug === "hardware") return <HardwarePage />
+  if (slug === "nome-backup") return <NomeBackupPage />
   if (["logs", "diagnostico", "kernel", "recursos", "servicos", "config-arquivo"].includes(slug)) return <AdvancedLeaf slug={slug} />
   return <DataPage slug={slug || "sistema"} />
 }

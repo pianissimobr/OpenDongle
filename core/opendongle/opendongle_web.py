@@ -725,15 +725,24 @@ def tela_kernel():
       <div class='card'><h2>Módulos carregados ({len(k['modulos'])})</h2>{mods}</div>""", "Kernel e módulos")
 
 
-def tela_config_arquivo():
+def config_mascarada():
+    """config.json com as senhas de Wi-Fi ocultas. O backup completo (com as
+    senhas) é outro caminho, de download explícito."""
     r = eng.config_show()
     if not r["ok"]:
-        return page(f"<div class='card'>{msg(r['erro'], 'er')}</div>", "Arquivo de configuração")
+        return r
     cfg = copy.deepcopy(r["config"])
     for secao in (cfg["wifi"]["hotspot"], cfg["wifi"]["cliente"]):
         if secao.get("senha"):
             secao["senha"] = "••••••••"
-    texto = json.dumps(cfg, ensure_ascii=False, indent=2)
+    return {"ok": True, "caminho": "/etc/opendongle/config.json", "config": cfg}
+
+
+def tela_config_arquivo():
+    r = config_mascarada()
+    if not r["ok"]:
+        return page(f"<div class='card'>{msg(r['erro'], 'er')}</div>", "Arquivo de configuração")
+    texto = json.dumps(r["config"], ensure_ascii=False, indent=2)
     return page(f"""
       <div class='card'><h1>🗂️ Arquivo de configuração</h1>
         <p>/etc/opendongle/config.json, de onde o dongle gera dnsmasq, firewall, rede, hostapd
@@ -1569,6 +1578,30 @@ def tela_audio(logado, r=None):
       <div class='card'><h2>🔵 Áudio Bluetooth</h2>{corpo_bt}</div>""", "Áudio")
 
 
+def rodar_diagnostico():
+    """Roda como PROCESSO SEPARADO, não import in-process: o teste de modem
+    usa signal.alarm() como watchdog, que só funciona na thread principal —
+    e as requisições rodam em threads do ThreadingHTTPServer."""
+    diag_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "opendongle_diag.py")
+    try:
+        r = subprocess.run(["python3", diag_path, "--json"],
+                           capture_output=True, text=True, timeout=30)
+        resultados = json.loads(r.stdout)
+    except Exception:
+        resultados = []
+    for res in resultados:
+        ULTIMO_DIAG[res["nome"]] = {"status": res["status"],
+            "detalhe": res["detalhe"], "quando": time.time()}
+    return bool(resultados)
+
+
+def diagnostico_json():
+    return {"ok": True, "resultados": [
+        {"nome": nome, "status": r["status"], "detalhe": r["detalhe"], "quando": r["quando"]}
+        for nome, r in ULTIMO_DIAG.items()]}
+
+
 def tela_diagnostico(logado):
     icone = {"ok": "b-ok", "falha": "b-er", "nao_testavel": "b-av"}
     if ULTIMO_DIAG:
@@ -2144,6 +2177,15 @@ class Painel(BaseHTTPRequestHandler):
                 return self._api_json(eng.recursos)
             if path == "/api/kernel":
                 return self._api_json(sis.kernel)
+            if path == "/api/diagnostico":
+                return self._api_json(diagnostico_json)
+            if path == "/api/config-arquivo":
+                return self._api_json(config_mascarada)
+            if path == "/api/backup":
+                # arquivo (com as senhas): só com sessão, sempre como download
+                if not self._logado():
+                    return self._send_json({"erro": "login"}, 401)
+                return self._enviar_backup()
             if path == "/api/logs":
                 u = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("u", [""])[0]
                 return self._api_json(lambda: eng.logs(u))
@@ -2201,6 +2243,8 @@ class Painel(BaseHTTPRequestHandler):
     def _enviar_backup(self):
         r = eng.backup()
         if not r["ok"]:
+            if PAINEL_SPA:
+                return self._send_json(r, 500)
             return self._send(tela_sistema(r))
         corpo = r["backup"].encode()
         nome = f"opendongle-backup-{time.strftime('%Y%m%d-%H%M')}.json"
@@ -2281,6 +2325,10 @@ class Painel(BaseHTTPRequestHandler):
                 time.sleep(1)
                 return self._send_json({"ok": False, "erro": "Senha atual incorreta."})
             return self._send_json(eng.renomear_usuario(args.get("novo", "")))
+        if acao == "diagnostico-rodar":
+            if not rodar_diagnostico():
+                return self._send_json({"ok": False, "erro": "O diagnóstico não devolveu resultado."})
+            return self._send_json(diagnostico_json())
         try:
             return self._send_json(api.acao(acao, args))
         except Exception as e:
@@ -2518,21 +2566,7 @@ class Painel(BaseHTTPRequestHandler):
             teste = aud.bt_testar_entrada if f.get("tipo") == "entrada" else aud.bt_testar_saida
             return self._send(tela_audio(True, teste(f.get("no"))))
         if path == "/diagnostico":
-            # roda como PROCESSO SEPARADO, não import in-process: o
-            # teste de modem usa signal.alarm() como watchdog, que só
-            # funciona na thread principal — e aqui estamos numa thread
-            # do ThreadingHTTPServer, nunca a principal.
-            diag_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "opendongle_diag.py")
-            try:
-                r = subprocess.run(["python3", diag_path, "--json"],
-                                   capture_output=True, text=True, timeout=30)
-                resultados = json.loads(r.stdout)
-            except Exception:
-                resultados = []
-            for res in resultados:
-                ULTIMO_DIAG[res["nome"]] = {"status": res["status"],
-                    "detalhe": res["detalhe"], "quando": time.time()}
+            rodar_diagnostico()
             return self._send(tela_diagnostico(True))
         return self._redir("/")
 

@@ -480,6 +480,7 @@ def fw_set(wifi_cliente_confiavel, ssh_pela_wan, painel_pela_wan):
 
 # --------------------------------------------------------------- SISTEMA
 UNITS_LOG = {"": None, "opendongle": "opendongle.service",
+             "painel": "opendongle-web.service",
              "dnsmasq": "dnsmasq.service", "hostapd": "hostapd@wlan0.service",
              "wifi-cliente": "wpa_supplicant@wlan0.service",
              "rede": "systemd-networkd.service",

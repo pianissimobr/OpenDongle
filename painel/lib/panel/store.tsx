@@ -242,6 +242,7 @@ export type MockData = {
     }[]
   }
   leds: Record<string, string>
+  hostname: string
   servicos: Servico[]
   tor: { ativo: boolean }
   remoto: { ativo: boolean; lan: boolean; saida: boolean }
@@ -332,6 +333,7 @@ function dadosIniciais(): MockData {
     tor: { ativo: false },
     remoto: { ativo: false, lan: false, saida: false },
     hora: { automatica: true, fuso: "America/Sao_Paulo", agora: "" },
+    hostname: "opendongle",
     servicos: [
       { nome: "bluetooth.service", habilitado: true, rodando: true, ramMb: 4.2, essencial: false, gerenciado: "", gerenciadoUrl: "", aviso: "" },
       { nome: "avahi-daemon.service", habilitado: true, rodando: true, ramMb: 2.1, essencial: false, gerenciado: "", gerenciadoUrl: "", aviso: "Desligado, opendongle.local para de funcionar." },
@@ -408,7 +410,7 @@ type Ctx = {
     /** ação real no motor (opendongle_engine.executar); ex.: "bt-conectar" */
     acao?: string
     args?: Record<string, unknown>
-  }) => Promise<void>
+  }) => Promise<ResultadoAcao | undefined>
   /** Recarrega estado/dados/saúde do dongle. */
   recarregar: () => Promise<void>
   saude: Saude
@@ -440,7 +442,10 @@ export async function apiGet<T>(rota: string): Promise<T | null> {
 }
 
 /** POST de uma ação para o motor (opendongle_engine.executar). */
-async function apiAcao(acao: string, args: Record<string, unknown>): Promise<{ ok: boolean; erro?: string; aviso?: string }> {
+/** Resposta do motor a uma ação: ok, e às vezes erro/aviso e dados extras. */
+export type ResultadoAcao = { ok: boolean; erro?: string; aviso?: string; [k: string]: unknown }
+
+export async function apiAcao(acao: string, args: Record<string, unknown>): Promise<ResultadoAcao> {
   try {
     const r = await fetch("/api/acao", {
       method: "POST",
@@ -524,20 +529,21 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const setDados = (fn: (d: MockData) => MockData) => setDadosState((d) => fn(d))
 
   const processar: Ctx["processar"] = ({ mensagem, detalhe = "", duracao, mutar, depois, ir, setEstado, acao, args }) =>
-    new Promise((resolve) => {
+    new Promise<ResultadoAcao | undefined>((resolve) => {
       const estimativa = Math.max(duracao ?? 3000, 700)
       setOverlay({ ativo: true, mensagem, detalhe, duracao: estimativa })
       const finalizar = async () => {
         if (mutar) setDadosState((d) => mutar(d))     // otimista: resposta imediata
+        let res: ResultadoAcao | undefined
         if (acao) {
-          await apiAcao(acao, args ?? {})              // ação real no motor
+          res = await apiAcao(acao, args ?? {})        // ação real no motor
           await recarregar()                           // e o estado verdadeiro por cima
         }
         if (setEstado) setEstadoNome(setEstado)
         if (depois) depois()
         setOverlay(null)
         if (ir) router.push(ir)
-        resolve()
+        resolve(res)
       }
       // ação real: espera o servidor. Sem ação (só navegação): tempo curto do protótipo.
       if (acao) {

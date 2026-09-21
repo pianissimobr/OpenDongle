@@ -215,6 +215,7 @@ def dados():
         "lan": _seguro(_lan, {}),
         "firewall": _seguro(_firewall, {}),
         "leds": cfg["sistema"]["leds"],
+        "hostname": cfg["sistema"]["hostname"],
         "servicos": _seguro(_servicos, []),
         "tor": {"ativo": cfg["tor"]["ativo"]},
         "remoto": {"ativo": cfg["remoto"]["ativo"], "lan": cfg["remoto"]["lan"],
