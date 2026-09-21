@@ -12,7 +12,7 @@ ROLE_SW=/sys/class/usb_role/ci_hdrc.0-role-switch/role
 UDC_STATE=/sys/class/udc/ci_hdrc.0/state
 USB0_CARRIER=/sys/class/net/usb0/carrier
 QMI_DEV=/dev/wwan0qmi0
-AT_DEV=/dev/wwan0at0
+AT_DEV=/dev/wwan0at0   # trocada por porta_at() quando as portas aparecem
 APN_CONF=/etc/usb-role-autosense-apn.conf
 # usuário do dongle pelo UID 1000: o nome pode ser trocado pelo painel
 USERNAME="$(getent passwd 1000 | cut -d: -f1)"
@@ -136,11 +136,20 @@ log "LEDs liberados pro grupo 'leds' (brightness/trigger; delay_on/off continuam
 # ---------- (D) modem AT/QMI liberado pro grupo 'dialout', em qualquer papel ----------
 # antes, isso so' rodava dentro do setup_4g() (so' em modo HOST). O
 # usuario pode querer ler/mandar AT manualmente mesmo em modo DEVICE.
+# O modem expõe duas portas AT (wwan0at0 e wwan0at1), e o firmware pode
+# fechar uma com o modem no ar (visto: a at0 sumiu, a at1 seguiu
+# respondendo). Usa a primeira que existir.
+porta_at() {
+    local p
+    for p in /dev/wwan0at*; do [ -e "$p" ] && { echo "$p"; return 0; }; done
+    echo /dev/wwan0at0
+}
 i=0
-while [ ! -e "$AT_DEV" ] && [ "$i" -lt 15 ]; do /bin/sleep 1; i=$((i+1)); done
+while [ -z "$(ls /dev/wwan0at* 2>/dev/null)" ] && [ "$i" -lt 15 ]; do /bin/sleep 1; i=$((i+1)); done
+AT_DEV=$(porta_at)
 if [ -e "$AT_DEV" ] || [ -e "$QMI_DEV" ]; then
-    chgrp dialout "$AT_DEV" "$QMI_DEV" 2>/dev/null
-    chmod 660 "$AT_DEV" "$QMI_DEV" 2>/dev/null
+    chgrp dialout /dev/wwan0at* "$QMI_DEV" 2>/dev/null
+    chmod 660 /dev/wwan0at* "$QMI_DEV" 2>/dev/null
     log "modem: portas AT/QMI liberadas pro grupo dialout"
 else
     log "modem: portas AT/QMI nao apareceram em 15s (sem firmware mpss?)"
@@ -208,6 +217,10 @@ get_apn_from_sim() {
     local imsi resp mcc mnc2 mnc3 key apn
     resp=$(at_resp "AT+CIMI" 4)
     imsi=$(echo "$resp" | grep -oE '[0-9]{15}' | head -1)
+    if [ -z "$imsi" ]; then
+        # porta AT muda: o IMSI também sai pelo QMI
+        imsi=$(timeout 10 qmicli -d "$QMI_DEV" --dms-uim-get-imsi 2>/dev/null | grep -oE '[0-9]{15}' | head -1)
+    fi
     [ -n "$imsi" ] || { log "4G: sem IMSI (sem SIM?)"; return 1; }
 
     mcc=${imsi:0:3}
@@ -235,8 +248,15 @@ setup_4g() {
     while [ ! -e "$QMI_DEV" ] && [ "$i" -lt 30 ]; do /bin/sleep 1; i=$((i+1)); done
     [ -e "$QMI_DEV" ] || { log "4G: $QMI_DEV nao apareceu"; return 1; }
 
-    # habilita radio
-    at_resp "AT+CFUN=1" 3 >/dev/null 2>&1
+    # Liga o rádio. O modem sobe em 'shutting-down'/low-power e assim nunca
+    # procura rede; antes só havia o AT+CFUN=1, que se perdia calado quando a
+    # porta AT não respondia. QMI primeiro (confirmado no aparelho), AT de reserva.
+    AT_DEV=$(porta_at)
+    if ! timeout 15 qmicli -d "$QMI_DEV" --dms-set-operating-mode=online >/dev/null 2>&1; then
+        at_resp "AT+CFUN=1" 3 >/dev/null 2>&1
+    fi
+    log "4G: radio em modo '$(timeout 10 qmicli -d "$QMI_DEV" --dms-get-operating-mode 2>/dev/null \
+        | awk -F"'" '/Mode/{print $2}')'"
 
     # detecta APN a partir do SIM (se user nao forcar um)
     APN="${USB_4G_APN:-}"
