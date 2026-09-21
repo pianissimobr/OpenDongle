@@ -1125,6 +1125,29 @@ def iniciar_busca_wifi():
     return {"ok": True, "aviso": "Buscando redes: o hotspot some por alguns segundos."}
 
 
+def _religar_hotspot(prazo=40):
+    """Religa o hostapd e espera ele voltar. Numa vez (não reproduzida) o job
+    ficou 30 s parado em 'Starting' sem nada no journal: se passar de 5 s,
+    registra a fila de jobs do systemd, que é o que faltou pra achar a causa.
+    Vai pro journal desta unit (opendongle-wifi-busca)."""
+    t0 = time.monotonic()
+    _run(["systemctl", "start", "--no-block", aplic.SVC_AP], 10)
+    registrou = False
+    while time.monotonic() - t0 < prazo:
+        if aplic._ativo(aplic.SVC_AP):
+            break
+        if not registrou and time.monotonic() - t0 > 5:
+            _, fila, _ = _run(["systemctl", "list-jobs", "--no-pager"], 5)
+            print(f"hotspot demorando a voltar ({time.monotonic() - t0:.0f} s); "
+                  f"fila do systemd:\n{fila}", flush=True)
+            registrou = True
+        time.sleep(0.5)
+    duracao = time.monotonic() - t0
+    if duracao > 5:
+        print(f"hotspot voltou em {duracao:.1f} s", flush=True)
+    return duracao
+
+
 def escanear_wifi(folga=1.5):
     """Busca de verdade. Em hotspot, pausa o hostapd pelo tempo do scan.
     'folga' deixa a resposta HTTP de quem pediu sair antes do hotspot cair."""
@@ -1149,7 +1172,7 @@ def escanear_wifi(folga=1.5):
         erro = f"A busca falhou: {e}"
     finally:
         if em_hotspot:
-            _run(["systemctl", "start", aplic.SVC_AP], 30)
+            _religar_hotspot()
             _run(["systemctl", "stop", f"{UNIT_BUSCA_WIFI}-guarda.timer"], 10)
     proprio = _ssid_hotspot()
     redes = sorted((r for r in redes if r["ssid"] != proprio), key=lambda r: -r["sinal"])[:20]
