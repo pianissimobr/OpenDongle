@@ -205,7 +205,8 @@ export type MockData = {
       padrao: boolean
       controles: { nome: string; tipo: "saída" | "entrada"; volume: number; mudo: boolean }[]
     }[]
-    btSaidas: { id: number; nome: string; padrao: boolean; volume: number; mudo: boolean }[]
+    /** 'dev' é o aparelho Bluetooth dono do nó (id próprio no PipeWire) */
+    btSaidas: { id: number; dev?: number; nome: string; padrao: boolean; volume: number; mudo: boolean }[]
     btEntradas: { id: number; nome: string; padrao: boolean; volume: number; mudo: boolean }[]
     btModos: Record<string, "musica" | "chamada">
   }

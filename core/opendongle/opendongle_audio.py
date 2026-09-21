@@ -239,8 +239,21 @@ def bt_instalado():
 
 
 def bt_ativo():
-    rc, _, _ = _como_usuario(["systemctl", "--user", "is-active", "--quiet", "wireplumber.service"], 10)
-    return rc == 0
+    """WirePlumber do usuário rodando? Lido direto do /proc, sem runuser: o
+    painel pergunta isso em toda leitura, e cada runuser abre uma sessão PAM
+    que deixa duas linhas no journal."""
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/status") as f:
+                campos = dict(l.split(":", 1) for l in f if ":" in l)
+        except OSError:
+            continue
+        if campos.get("Name", "").strip() == "wireplumber" and \
+                campos.get("Uid", "").split()[:1] == [str(UID)]:
+            return True
+    return False
 
 
 def aplicar_bt(ligar):
@@ -288,13 +301,37 @@ def aplicar_bt(ligar):
     return mudou
 
 
+def pw_dump():
+    """Grafo do PipeWire (pw-dump), ou [] se não deu pra ler. Quem precisa de
+    mais de uma consulta passa o mesmo resultado adiante: cada chamada é um
+    runuser."""
+    rc, out, _ = _como_usuario(["pw-dump"], 25)
+    try:
+        return json.loads(out.decode(errors="replace")) if rc == 0 else []
+    except (ValueError, AttributeError):
+        return []
+
+
+def _nos_bluetooth(dump):
+    """{id do nó: id do aparelho} para os nós de áudio que vêm do Bluetooth."""
+    nos = {}
+    for o in dump:
+        props = (o.get("info") or {}).get("props") or {}
+        if not str(o.get("type", "")).endswith("Node"):
+            continue
+        if props.get("device.api") == "bluez5" or any(k.startswith("api.bluez5") for k in props):
+            nos[o["id"]] = props.get("device.id")
+    return nos
+
+
 def _wpctl_status():
     rc, out, _ = _como_usuario(["wpctl", "status"], 10)
     return out.decode(errors="replace") if rc == 0 else ""
 
 
-def bt_aparelhos():
-    """Saídas e entradas do PipeWire (wpctl status), com padrão e volume."""
+def bt_aparelhos(dump=None):
+    """Saídas e entradas Bluetooth do PipeWire (wpctl status), com padrão,
+    volume e o aparelho ('dev') a que cada nó pertence."""
     texto = _wpctl_status()
     saidas, entradas, secao = [], [], None
     em_audio = False
@@ -320,10 +357,14 @@ def bt_aparelhos():
             secao.append({"id": int(m.group(2)), "nome": m.group(3), "padrao": bool(m.group(1)),
                           "volume": round(float(m.group(4)) * 100), "mudo": bool(m.group(5))})
     # o PipeWire enxerga todas as placas (a Loopback do diagnóstico, placas
-    # USB que já têm cartão próprio): aqui só entra o que vem do Bluetooth
-    bt = lambda x: 'api.bluez5' in _como_usuario(["wpctl", "inspect", str(x["id"])], 10)[1].decode(errors="replace")
-    return {"ok": True, "saidas": [x for x in saidas if bt(x)],
-            "entradas": [x for x in entradas if bt(x)]}
+    # USB que já têm cartão próprio): aqui só entra o que vem do Bluetooth.
+    # Um pw-dump resolve todos os nós — antes era um 'wpctl inspect' por nó.
+    if not saidas and not entradas:
+        return {"ok": True, "saidas": [], "entradas": []}
+    nos = _nos_bluetooth(pw_dump() if dump is None else dump)
+    def so_bt(lista):
+        return [dict(x, dev=nos[x["id"]]) for x in lista if x["id"] in nos]
+    return {"ok": True, "saidas": so_bt(saidas), "entradas": so_bt(entradas)}
 
 
 # Um fone Bluetooth só expõe microfone no perfil de chamada (HFP/HSP); no de
@@ -332,14 +373,11 @@ MODOS_BT = {"musica": ("a2dp-sink", "Música (som melhor, sem microfone)"),
             "chamada": ("headset-head-unit", "Chamada (com microfone, som pior)")}
 
 
-def bt_dispositivos(entradas=None):
+def bt_dispositivos(entradas=None, dump=None):
     """Aparelhos Bluetooth do PipeWire com os perfis de música e de chamada.
-    'entradas' evita repetir o wpctl quando quem chama já tem a lista."""
-    rc, out, _ = _como_usuario(["pw-dump"], 25)
-    try:
-        dados = json.loads(out.decode(errors="replace"))
-    except (ValueError, AttributeError):
-        return []
+    'entradas' e 'dump' evitam repetir o wpctl/pw-dump quando quem chama já
+    os tem."""
+    dados = pw_dump() if dump is None else dump
     lista = []
     for o in dados:
         info = o.get("info") or {}
@@ -361,7 +399,7 @@ def bt_dispositivos(entradas=None):
     # O nó do microfone continua registrado no pw-dump mesmo em modo música
     # (visto ao vivo), então quem diz a verdade é a lista de entradas ativas.
     if entradas is None:
-        entradas = bt_aparelhos()["entradas"]
+        entradas = bt_aparelhos(dados)["entradas"]
     com_microfone = {e["nome"] for e in entradas}
     for d in lista:
         d["modo"] = "chamada" if d["nome"] in com_microfone else "musica"

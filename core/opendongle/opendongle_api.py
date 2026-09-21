@@ -143,13 +143,16 @@ def _audio():
     saidas = entradas = []
     modos = {}
     if ligado:
-        d = _seguro(aud.bt_dispositivos, {"ok": False})
-        if d.get("ok"):
-            saidas = d.get("saidas", [])
-            entradas = d.get("entradas", [])
-            for x in saidas + entradas:
-                if x.get("modo"):
-                    modos[str(x["id"])] = x["modo"]
+        # um pw-dump só para as duas consultas (cada uma seria um runuser)
+        dump = _seguro(aud.pw_dump, [])
+        ap = _seguro(lambda: aud.bt_aparelhos(dump), {"ok": False})
+        if ap.get("ok"):
+            saidas, entradas = ap["saidas"], ap["entradas"]
+            modo_do_aparelho = {d["id"]: d["modo"] for d in
+                                _seguro(lambda: aud.bt_dispositivos(entradas, dump), [])}
+            for x in saidas:
+                if x.get("dev") in modo_do_aparelho:
+                    modos[str(x["id"])] = modo_do_aparelho[x["dev"]]
     return {"bluetoothLigado": ligado, "placas": placas,
             "btSaidas": saidas, "btEntradas": entradas, "btModos": modos}
 
