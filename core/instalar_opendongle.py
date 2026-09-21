@@ -124,6 +124,25 @@ ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_cli.py rede inicial
 WantedBy=multi-user.target
 """
 
+# Varre as redes Wi-Fi ANTES do hotspot subir: com o hotspot no ar o chip não
+# escaneia, e pausar depois derruba quem estiver conectado (o celular pula pra
+# outro Wi-Fi conhecido e não volta). Puxada pelo mesmo gatilho do hostapd (o
+# wlan0 aparecer) e ordenada antes dele; o painel mostra o resultado com a hora.
+UNIT_WIFI_BOOT = """[Unit]
+Description=OpenDongle: varre as redes Wi-Fi antes de subir o hotspot
+After=sys-subsystem-net-devices-wlan0.device opendongle-boot.service
+Before=hostapd@wlan0.service wpa_supplicant@wlan0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/opendongle/opendongle_cli.py wifi --escanear
+# se o rádio travar, o hotspot sobe mesmo assim
+TimeoutStartSec=25
+
+[Install]
+WantedBy=sys-subsystem-net-devices-wlan0.device
+"""
+
 # Units de versões antigas, quando cada parte era um processo separado.
 UNITS_ANTIGAS = ["opendongle-uplink.service", "opendongle-led.service",
                  "opendongle-discovery.service"]
@@ -277,6 +296,9 @@ def main():
         "cat > /etc/systemd/system/opendongle-boot.service << \"EOF\"\n"
         + UNIT_BOOT +
         "EOF\n"
+        "cat > /etc/systemd/system/opendongle-wifi-boot.service << \"EOF\"\n"
+        + UNIT_WIFI_BOOT +
+        "EOF\n"
         "cat > /etc/systemd/system/opendongle-web.socket << \"EOF\"\n"
         + UNIT_WEB_SOCKET +
         "EOF\n"
@@ -342,6 +364,7 @@ def main():
         "systemctl restart opendongle.service && "
         "systemctl enable usb-role-autosense.service && "
         "systemctl enable opendongle-boot.service && "
+        "systemctl enable opendongle-wifi-boot.service && "
         "sleep 2 && systemctl is-active opendongle.service'"
     )
     r = subprocess.run(ssh + [remoto],

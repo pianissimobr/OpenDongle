@@ -238,9 +238,22 @@ def wifi_scan():
     """Redes Wi-Fi ao alcance. Lento (~alguns segundos): o front pede quando
     a pessoa abre a tela de conectar."""
     r = _seguro(eng.listar_wifi, {"ok": False})
-    redes = [{"ssid": x.get("ssid", ""), "sinal": x.get("sinal", 0),
+    redes = [{"ssid": x.get("ssid", ""), "sinal": int(x.get("sinal") or 0),
+              "aberta": x.get("seg", "aberta").lower() in ("aberta", "", "--"),
               "seguranca": x.get("seg", "")} for x in r.get("redes", []) if x.get("ssid")]
-    return {"ok": r.get("ok", False), "redes": redes, "aviso": r.get("aviso", "")}
+    # rede salva dá pra reconectar sem scan (e sem digitar a senha de novo)
+    conhecidas = _seguro(eng.redes_conhecidas, {"ok": False})
+    salvas = [x["ssid"] for x in conhecidas.get("redes", [])] if conhecidas.get("ok") else []
+    return {"ok": r.get("ok", False), "redes": redes, "aviso": r.get("aviso", ""),
+            "emHotspot": r.get("em_hotspot", False), "salvas": salvas,
+            # busca com o hotspot pausado: quando terminou e se há uma rodando
+            "quando": r.get("quando", 0), "buscando": r.get("buscando", False),
+            # relógio do dongle: a idade da busca não pode depender do do celular
+            "agora": time.time(),
+            # pro localizador: quem é este dongle e onde ele já esteve
+            "id": _seguro(eng.id_aparelho, ""),
+            "enderecos": _seguro(eng.enderecos_por_rede, {}),
+            "ultimaConexao": _seguro(eng.ultima_conexao, None)}
 
 
 def perfil():

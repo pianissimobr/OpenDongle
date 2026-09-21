@@ -10,6 +10,7 @@ project. (Flags and messages are in Portuguese, matching the device.)
 sudo opendongle status                              # mode, internet, hotspot
 sudo opendongle hotspot --ssid MyNetwork --senha mypassword
 sudo opendongle wifi --list                         # visible Wi-Fi networks
+sudo opendongle wifi --escanear                     # scan now (in hotspot mode, pauses the hotspot ~2 s)
 sudo opendongle wifi --ssid HomeX --senha secret    # join an existing Wi-Fi as a client
 sudo opendongle modem                               # SIM, carrier, signal and 4G diagnosis
 sudo opendongle modem --apn claro.com.br            # APN for the current SIM's carrier

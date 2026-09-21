@@ -160,6 +160,55 @@ def modo_wifi():
 # o último visto POR REDE, em disco: assim, plugando o cabo USB (que reinicia o
 # dongle), o painel ainda sabe dizer onde ele estava.
 ENDERECOS = "/etc/opendongle/enderecos.json"
+ID_APARELHO = "/etc/opendongle/id"
+ULTIMA_CONEXAO = "/run/opendongle/ultima-conexao.json"
+
+
+def id_aparelho():
+    """Identidade estável e aleatória deste dongle. Não é segredo: serve pro
+    localizador do painel ter certeza de que achou ESTE dongle e não outro da
+    mesma rede. (O MAC do Wi-Fi não serve: sem persist, muda a cada boot.)"""
+    try:
+        with open(ID_APARELHO) as f:
+            atual = f.read().strip()
+        if re.fullmatch(r"[0-9a-f]{16}", atual):
+            return atual
+    except OSError:
+        pass
+    novo = os.urandom(8).hex()
+    os.makedirs(os.path.dirname(ID_APARELHO), exist_ok=True)
+    with open(ID_APARELHO + ".tmp", "w") as f:
+        f.write(novo + "\n")
+    os.replace(ID_APARELHO + ".tmp", ID_APARELHO)
+    return novo
+
+
+def enderecos_por_rede():
+    """{ssid: último IP do dongle nessa rede} — com o lease fixo, é o palpite
+    mais provável de onde ele vai estar ao voltar pra mesma rede."""
+    return {ssid: reg["ip"] for ssid, reg in _ler_enderecos().items() if reg.get("ip")}
+
+
+def ultima_conexao():
+    """Resultado da última tentativa de virar cliente de um Wi-Fi. Quem
+    estava no hotspot perde a resposta quando o hotspot cai; se deu errado, o
+    dongle volta ao hotspot e o painel mostra aqui o que aconteceu."""
+    try:
+        with open(ULTIMA_CONEXAO) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _registrar_conexao(ssid, ok, detalhe):
+    try:
+        os.makedirs(os.path.dirname(ULTIMA_CONEXAO), exist_ok=True)
+        with open(ULTIMA_CONEXAO + ".tmp", "w") as f:
+            json.dump({"ssid": ssid, "ok": ok, "detalhe": detalhe, "quando": time.time()},
+                      f, ensure_ascii=False)
+        os.replace(ULTIMA_CONEXAO + ".tmp", ULTIMA_CONEXAO)
+    except OSError:
+        pass
 MAX_ENDERECOS = 8
 
 
@@ -756,6 +805,14 @@ def connect_wifi(ssid, senha):
     senha = senha or ""
     if not ssid:
         return {"ok": False, "erro": "Informe o nome da rede Wi-Fi."}
+    if not senha:
+        # rede já conhecida: usa a senha guardada. Sem isto, reconectar sem
+        # digitar gravava senha vazia por cima da salva.
+        try:
+            senha = next((r["senha"] for r in conf.carregar()["wifi"]["conhecidas"]
+                          if r["ssid"] == ssid), "")
+        except (ValueError, OSError, KeyError):
+            pass
     err = conf.validar_ssid(ssid) or (senha and conf.validar_senha_wifi(senha))
     if err:
         return {"ok": False, "erro": err}
@@ -799,6 +856,7 @@ def _connect_wifi_networkd(ssid, senha):
                 partes.append("O hotspot foi desligado.")
                 if not aplic.redes_automaticas(conf.carregar()):
                     partes.append("Ao reiniciar, o dongle volta a ser hotspot.")
+                _registrar_conexao(ssid, True, ip)
                 return {"ok": True, "modo": "wifi", "ssid": ssid, "ip": ip,
                         "aviso": " ".join(partes)}
             time.sleep(2)
@@ -810,6 +868,7 @@ def _connect_wifi_networkd(ssid, senha):
     # hotspot, que é por onde o usuário estava configurando)
     _alterar_config(lambda c: c.update(wifi=anterior))
     config_aplicar()
+    _registrar_conexao(ssid, False, motivo)
     return {"ok": False, "erro": f"Não conectou em {ssid}: {motivo}. "
             "O modo anterior foi religado."}
 
@@ -988,6 +1047,9 @@ def listar_wifi():
       3) se vier vazio, avisamos que pode ser preciso alternar de modo.
     """
     proprio = _ssid_hotspot()
+    em_hotspot = modo_wifi() == "hotspot"
+    if em_hotspot:
+        return ultima_busca_wifi()
     if aplic.rede_networkd():
         # o SSID vem inteiro (não dá split em ':'), então não passa pelo
         # parser do nmcli abaixo
@@ -1012,11 +1074,90 @@ def listar_wifi():
             redes.append({"ssid": ssid, "sinal": p[1] if len(p) > 1 else "0",
                           "seg": ":".join(p[2:]) or "aberta"})
     redes.sort(key=lambda x: -int(x["sinal"] or 0))
-    aviso = ("" if redes else
-             "Nenhuma rede além da própria foi vista. O rádio está em "
-             "modo hotspot; conectar a um Wi-Fi vai alternar o modo. "
-             "Se a lista vier vazia, digite o nome da rede manualmente.")
-    return {"ok": True, "redes": redes[:20], "aviso": aviso}
+    # o wcn36xx não aceita duas interfaces ao mesmo tempo ('interface
+    # combinations are not supported'): com o hotspot no ar, todo scan volta
+    # 'Operation not supported', inclusive o ap-force
+    if redes:
+        aviso = ""
+    elif em_hotspot:
+        aviso = ("Com o hotspot ligado, o Wi-Fi do dongle não consegue procurar "
+                 "redes (limitação do chip). Digite o nome da rede ou escolha "
+                 "uma rede salva.")
+    else:
+        aviso = "Nenhuma rede encontrada por perto."
+    return {"ok": True, "redes": redes[:20], "aviso": aviso, "em_hotspot": em_hotspot}
+
+
+# O wcn36xx não aceita duas interfaces ao mesmo tempo ('interface
+# combinations are not supported'): com o hotspot no ar, todo scan volta
+# 'Operation not supported'. A saída é pausar o hotspot: parar o hostapd
+# devolve o wlan0 ao modo cliente (e o tira da bridge), o scan leva ~1 s e o
+# hostapd volta — ~2 s sem hotspot, medido no aparelho.
+BUSCA_WIFI_JSON = "/run/opendongle/wifi-busca.json"
+UNIT_BUSCA_WIFI = "opendongle-wifi-busca"
+
+
+def ultima_busca_wifi():
+    """Resultado da última busca com o hotspot pausado, e se há uma rodando."""
+    try:
+        with open(BUSCA_WIFI_JSON) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    redes = d.get("redes", [])
+    return {"ok": True, "redes": redes, "em_hotspot": True,
+            "quando": d.get("quando", 0), "buscando": aplic._ativo(UNIT_BUSCA_WIFI),
+            "aviso": d.get("erro", "") or ("" if redes or not d else
+                                            "Nenhuma rede encontrada por perto.")}
+
+
+def iniciar_busca_wifi():
+    """Dispara escanear_wifi() numa unit própria: quem está no hotspot perde a
+    conexão por alguns segundos, e a busca tem que terminar — e religar o
+    hotspot — mesmo sem ninguém esperando a resposta."""
+    if aplic._ativo(UNIT_BUSCA_WIFI):
+        return {"ok": True, "aviso": "Busca já em andamento."}
+    cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opendongle_cli.py")
+    rc, _, err = _run(["systemd-run", "--collect", "--unit", UNIT_BUSCA_WIFI,
+                       sys.executable, cli, "wifi", "--escanear"], 15)
+    if rc != 0:
+        return {"ok": False, "erro": f"Não iniciou a busca: {err[:160]}"}
+    return {"ok": True, "aviso": "Buscando redes: o hotspot some por alguns segundos."}
+
+
+def escanear_wifi(folga=1.5):
+    """Busca de verdade. Em hotspot, pausa o hostapd pelo tempo do scan.
+    'folga' deixa a resposta HTTP de quem pediu sair antes do hotspot cair."""
+    em_hotspot = modo_wifi() == "hotspot"
+    redes, erro = [], ""
+    try:
+        if em_hotspot:
+            # rede de segurança: se este processo morrer no meio, o hotspot
+            # volta sozinho (start num serviço já ativo não faz nada)
+            _run(["systemd-run", "--collect", "--on-active=60",
+                  f"--unit={UNIT_BUSCA_WIFI}-guarda", "systemctl", "start", aplic.SVC_AP], 10)
+            time.sleep(folga)
+            _run(["systemctl", "stop", aplic.SVC_AP], 20)
+        # no boot (antes do hostapd) o wlan0 ainda está desligado
+        _run(["ip", "link", "set", IFACE_WIFI, "up"], 5)
+        for _ in range(3):
+            redes = _listar_wifi_iw()
+            if redes:
+                break
+            time.sleep(1)
+    except Exception as e:           # o hotspot volta de qualquer jeito
+        erro = f"A busca falhou: {e}"
+    finally:
+        if em_hotspot:
+            _run(["systemctl", "start", aplic.SVC_AP], 30)
+            _run(["systemctl", "stop", f"{UNIT_BUSCA_WIFI}-guarda.timer"], 10)
+    proprio = _ssid_hotspot()
+    redes = sorted((r for r in redes if r["ssid"] != proprio), key=lambda r: -r["sinal"])[:20]
+    os.makedirs(os.path.dirname(BUSCA_WIFI_JSON), exist_ok=True)
+    with open(BUSCA_WIFI_JSON + ".tmp", "w") as f:
+        json.dump({"quando": time.time(), "redes": redes, "erro": erro}, f, ensure_ascii=False)
+    os.replace(BUSCA_WIFI_JSON + ".tmp", BUSCA_WIFI_JSON)
+    return {"ok": not erro, "redes": redes, **({"erro": erro} if erro else {})}
 
 
 # --------------------------------------------------------------- SAÚDE DO SISTEMA
@@ -1627,6 +1768,7 @@ ACOES = {
     "modem-online": lambda a: modem_online(),
     "list-wifi": lambda a: listar_wifi(),
     "wifi-conhecidas": lambda a: redes_conhecidas(),
+    "wifi-buscar": lambda a: iniciar_busca_wifi(),
     "wifi-esquecer": lambda a: esquecer_rede(a.get("ssid")),
     "wifi-auto": lambda a: wifi_auto(a.get("ativo"), a.get("todas"),
                                      a.get("marcadas")),

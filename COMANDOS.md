@@ -9,6 +9,7 @@ interface web, no CLI. Veja o [README](README_pt.md) para o resto do projeto.
 sudo opendongle status                              # modo, internet, hotspot
 sudo opendongle hotspot --ssid MinhaRede --senha minhasenha
 sudo opendongle wifi --list                         # redes Wi-Fi visíveis
+sudo opendongle wifi --escanear                     # busca redes agora (em hotspot, pausa o hotspot ~2 s)
 sudo opendongle wifi --ssid CasaX --senha segredo   # vira cliente de um Wi-Fi
 sudo opendongle modem                               # chip, operadora, sinal e diagnóstico do 4G
 sudo opendongle modem --apn claro.com.br            # APN da operadora do chip atual

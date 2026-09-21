@@ -2122,6 +2122,16 @@ class Painel(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/ola":
+            # O localizador do painel: depois do dongle trocar de rede, a página
+            # (já carregada no celular) testa endereços prováveis e confere a
+            # identidade aqui. Público e com CORS de propósito — a página vem de
+            # outra origem (o IP do hotspot) — e antes da checagem de Host: o
+            # teste chega por IP, por opendongle.local ou pelo <hostname>.local.
+            # Só diz quem é; nada de estado nem de configuração.
+            return self._send_json({"tipo": "OPENDONGLE_HELLO_V1", "id": eng.id_aparelho(),
+                                    "host": socket.gethostname()},
+                                   extra={"Access-Control-Allow-Origin": "*"})
         ip = eng.ip_lan()
         if path in DETECCAO:                     # portal cativo
             return self._redir(f"http://{ip}/")

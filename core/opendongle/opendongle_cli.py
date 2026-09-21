@@ -108,6 +108,8 @@ def main():
     p.add_argument("--ssid")
     p.add_argument("--senha", default="")
     p.add_argument("--list", action="store_true", help="lista redes por perto")
+    p.add_argument("--escanear", action="store_true",
+                   help="busca redes (em hotspot, pausa o hotspot por ~2 s)")
     p.add_argument("--conhecidas", action="store_true", help="lista as redes salvas")
     p.add_argument("--esquecer", metavar="SSID", help="apaga uma rede salva")
     p.add_argument("--auto", choices=["on", "off"],
@@ -256,6 +258,8 @@ def main():
     elif args.cmd == "wifi":
         if args.list:
             res = eng.listar_wifi()
+        elif args.escanear:
+            res = eng.escanear_wifi()
         elif args.conhecidas:
             res = eng.redes_conhecidas()
         elif args.esquecer:
