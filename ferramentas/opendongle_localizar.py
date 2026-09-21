@@ -16,17 +16,24 @@ Abre sozinho http://127.0.0.1:8765 no navegador padrão. Clique em
 "Procurar dongle" — o Python local dispara o probe, escuta ~2s e mostra
 quem respondeu.
 
-Por que a busca ainda funciona mesmo com o dongle sem ser o gateway padrão
-do PC (ipv4.never-default, ver TROUBLESHOOTING_pt.md): o probe vai também
-pro broadcast da sub-rede padrão do OpenDongle (192.168.100.255), não só
-pro broadcast geral (255.255.255.255). A rota até essa sub-rede existe
-sempre que a interface do dongle tem IP nela, independente de qual
-interface é "a rota padrão" — não precisa enumerar interfaces do sistema.
+Broadcast dirigido por interface: o 255.255.255.255 sai só pela interface
+da rota padrão. Num PC com várias placas (Wi-Fi, cabo, USB do dongle, VPN,
+Docker), o dongle numa rede que não é a padrão nunca ouviria o probe. Então
+o probe vai pro broadcast de CADA interface IPv4 (ex.: 192.168.5.255), com o
+socket preso ao IP dela, pro sistema usar a placa certa — além do
+192.168.100.255 (a rede USB do OpenDongle) e do broadcast geral. Sem
+dependências: lê 'ip -j' (Linux), 'ifconfig' (macOS/BSD) ou 'ipconfig'
+(Windows, em qualquer idioma).
 """
 import http.server
+import ipaddress
 import json
+import re
+import selectors
 import socket
+import subprocess
 import threading
+import time
 import webbrowser
 
 PORTA_HTTP = 8765
@@ -87,7 +94,7 @@ async function buscar() {{
     }} else {{
       out.innerHTML = dados.achados.map(d =>
         `<div class="item"><div><a href="http://${{d.ip}}/" target="_blank">` +
-        `${{d.ip}}</a><div class="mut">${{d.host}}</div></div></div>`
+        `${{d.ip}}</a><div class="mut">${{d.host}}${{d.id ? ' · ' + d.id.slice(0, 6) : ''}}</div></div></div>`
       ).join('');
     }}
   }} catch (e) {{
@@ -101,35 +108,88 @@ async function buscar() {{
 """
 
 
-def buscar_dongles():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    s.settimeout(TIMEOUT_BUSCA)
-    for destino in DESTINOS_BROADCAST:
+def _rodar(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _redes_de_texto(texto):
+    """Pares IP + máscara num texto de ifconfig/ipconfig, em qualquer idioma:
+    o IPv4 da interface seguido da máscara (dotted '255.255.255.0' ou hex
+    '0xffffff00', que é como o ifconfig do macOS escreve)."""
+    redes = []
+    quad = r"(\d{1,3}(?:\.\d{1,3}){3})"
+    for m in re.finditer(quad + r"[^\n]*?(?:\n[^\n]*?)??(?:netmask|mask|m[aá]scara)[^\d\n]*"
+                         r"(0x[0-9a-f]{8}|" + quad[1:-1] + ")", texto, re.I):
+        ip, mascara = m.group(1), m.group(2)
+        if mascara.lower().startswith("0x"):
+            mascara = str(ipaddress.IPv4Address(int(mascara, 16)))
         try:
+            redes.append(ipaddress.IPv4Interface(f"{ip}/{mascara}"))
+        except ValueError:
+            continue
+    return redes
+
+
+def interfaces_ipv4():
+    """[(ip local, broadcast da rede)] de cada interface IPv4 utilizável."""
+    redes = []
+    saida = _rodar(["ip", "-j", "-4", "addr", "show"])            # Linux
+    if saida:
+        try:
+            for iface in json.loads(saida):
+                for a in iface.get("addr_info", []):
+                    redes.append(ipaddress.IPv4Interface(f"{a['local']}/{a['prefixlen']}"))
+        except (ValueError, KeyError):
+            redes = []
+    if not redes:                                                # macOS/BSD e Windows
+        redes = _redes_de_texto(_rodar(["ifconfig"]) or _rodar(["ipconfig"]))
+    saida = []
+    for r in redes:
+        # loopback, link-local e /31-/32 (VPN tipo Tailscale) não têm broadcast útil
+        if r.ip.is_loopback or r.ip.is_link_local or r.network.prefixlen >= 31:
+            continue
+        saida.append((str(r.ip), str(r.network.broadcast_address)))
+    return saida
+
+
+def buscar_dongles():
+    """Um socket por interface, preso ao IP dela, gritando no broadcast dela;
+    mais um solto pros destinos fixos. O dongle responde por unicast ao
+    remetente, e o IP de origem da resposta é o endereço certo do painel."""
+    sel = selectors.DefaultSelector()
+    envios = [(ip, bcast) for ip, bcast in interfaces_ipv4()]
+    envios += [("", d) for d in DESTINOS_BROADCAST]
+    for origem, destino in envios:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            s.bind((origem, 0))
             s.sendto(PROBE, (destino, PORTA_DESCOBERTA))
         except OSError:
-            pass
+            s.close()
+            continue
+        s.setblocking(False)
+        sel.register(s, selectors.EVENT_READ)
 
     achados = {}
-    fim = TIMEOUT_BUSCA
-    import time
-    limite = time.time() + fim
-    while time.time() < limite:
-        try:
-            s.settimeout(max(0.05, limite - time.time()))
-            dados, endereco = s.recvfrom(512)
-        except (socket.timeout, OSError):
-            break
-        try:
-            info = json.loads(dados.decode())
-        except (ValueError, UnicodeDecodeError):
-            continue
-        if info.get("tipo") != "OPENDONGLE_HELLO_V1":
-            continue
-        achados[endereco[0]] = info.get("host", "opendongle")
-    s.close()
-    return [{"ip": ip, "host": host} for ip, host in sorted(achados.items())]
+    limite = time.monotonic() + TIMEOUT_BUSCA
+    while time.monotonic() < limite:
+        for chave, _ in sel.select(timeout=max(0.05, limite - time.monotonic())):
+            try:
+                dados, endereco = chave.fileobj.recvfrom(512)
+                info = json.loads(dados.decode())
+            except (OSError, ValueError, UnicodeDecodeError):
+                continue
+            if info.get("tipo") == "OPENDONGLE_HELLO_V1":
+                achados[endereco[0]] = {"host": info.get("host", "opendongle"),
+                                        "id": info.get("id", "")}
+    for chave in list(sel.get_map().values()):
+        chave.fileobj.close()
+    sel.close()
+    return [{"ip": ip, **d} for ip, d in sorted(achados.items())]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

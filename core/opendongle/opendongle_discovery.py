@@ -19,6 +19,14 @@ PORTA = 40404
 PROBE = b"OPENDONGLE_DISCOVER_V1"
 
 
+def _id_aparelho():
+    try:
+        with open("/etc/opendongle/id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def laco():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -26,6 +34,8 @@ def laco():
     resposta = json.dumps({
         "tipo": "OPENDONGLE_HELLO_V1",
         "host": socket.gethostname(),
+        # a mesma identidade do /api/ola: distingue vários dongles na mesma rede
+        "id": _id_aparelho(),
     }).encode()
 
     while True:
