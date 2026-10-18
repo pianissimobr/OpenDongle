@@ -319,6 +319,26 @@ Duas causas possíveis:
    ```
    python3 restaurar_calibracao_ssh.py
    ```
+   A ferramenta lê o `sec`/`fsg` do dongle e só usa um backup **dele**.
+   Ela nunca pega "o mais recente" da pasta: com vários dongles na
+   bancada, gravar o EFS de outro aparelho clona ou zera o IMEI. Antes de
+   gravar, ela salva as partições atuais em `backup/antes_restauro_<data>`.
+
+### O IMEI aparece como `000000000000000`
+
+O modem subiu, mas não aceitou o EFS (`modemst1`/`modemst2`) que está
+gravado. Já foi visto na bancada: os `modemst` **de fábrica**, gravados
+depois que o OpenStick trocou o `tz` e os bootloaders, deixaram o IMEI
+zerado. Já os `modemst` que o próprio Debian vinha usando mantinham o
+IMEI certo. O `fsg` e o `sec` eram idênticos nos dois casos.
+
+- Se você acabou de rodar `restaurar_calibracao_ssh.py`, volte o que
+  havia antes com o comando que ele imprime
+  (`--pasta backup/antes_restauro_<data>`).
+- Para gravar a calibração sem mexer no EFS que funciona, use
+  `--sem-modemst`.
+- Nunca grave `modemst` de outro dongle. O `fsg` e o `sec` identificam
+  o aparelho, e as ferramentas recusam backup com esses dois diferentes.
 
 ### Perdi o backup de um dongle — dá para recuperar?
 
