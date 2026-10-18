@@ -22,6 +22,22 @@ CONFIG = os.environ.get("OPENDONGLE_CONFIG", "/etc/opendongle/config.json")
 APN_CONF = "/etc/usb-role-autosense-apn.conf"
 NM_HOTSPOT = "/etc/NetworkManager/system-connections/hotspot.nmconnection"
 
+# Marcador do SSID ainda não escolhido: vira OpenDongle_<4 hex do id> no
+# primeiro carregamento. Ver _ssid_unico.
+SSID_A_GERAR = "@id@"
+NOME_BASE_SSID = "OpenDongle"
+SUFIXO_SSID_HEX = 4
+ID_APARELHO = os.environ.get("OPENDONGLE_ID_ARQUIVO", "/etc/opendongle/id")
+
+# O que a imagem OpenStick já traz gravado no hotspot. Não é escolha de
+# ninguém — é o estado de fábrica do primeiro boot. Adotá-lo como se fosse
+# "nome que o dono escolheu" travava o P-5 inteiro: o painel anunciava
+# OpenDongle_<4 hex> enquanto o dongle continuava no 4G-UFI-XX, e o celular
+# do cliente achava uma rede que não era a da tela. Só um nome QUE ALGUÉM
+# TROCOU é preservado. (Mesma senha: 1234567890 é a de fábrica.)
+SSID_DE_FABRICA = {"4G-UFI-XX"}
+SENHA_DE_FABRICA = {"1234567890"}
+
 PADRAO = {
     "versao": 2,
     "sistema": {
@@ -38,7 +54,12 @@ PADRAO = {
     },
     "wifi": {
         "modo": "hotspot",
-        "hotspot": {"ssid": "OpenDongle", "senha": "opendongle",
+        # o nome da rede precisa ser único por aparelho: dois dongles na
+        # mesma casa com "OpenDongle" fariam o celular pular entre os dois.
+        # O marcador abaixo é trocado por OpenDongle_<4 hex do id> quando a
+        # config ainda não tem um nome escolhido por ninguém (ver _ssid_unico).
+        # Assim, quem já trocou o nome não é sobrescrito.
+        "hotspot": {"ssid": SSID_A_GERAR, "senha": "opendongle",
                     "canal": 1, "pais": "BR"},
         # a rede da sessão atual (a última em que o dongle entrou)
         "cliente": {"ssid": "", "senha": ""},
@@ -51,7 +72,11 @@ PADRAO = {
         # redes que o dongle já conhece: {"ssid", "senha", "auto"}
         "conhecidas": [],
     },
-    "wan": {"apn_extra": {}},
+    # ativo: a internet pelo 4G. Ligada, o dongle conecta sozinho sempre que
+    # estiver sem internet (qualquer papel USB); só fica fora se desligarem.
+    # no_pc: plugado no computador (papel USB "device") o 4G fica desligado
+    # por padrão — no USB de notebook ele esquentou a 78–80° (na tomada, 63–66°)
+    "wan": {"ativo": True, "no_pc": False, "apn_extra": {}},
     "dns": {"criptografado": False, "servidores": ["1.1.1.1", "8.8.8.8"]},
     # "wan" aqui é o 4G. A rede em que o dongle entra como cliente Wi-Fi é
     # confiável por padrão: é por ela que o painel e o opendongle_localizar
@@ -157,9 +182,12 @@ def validar(cfg):
         if wifi["modo"] not in ("hotspot", "cliente"):
             erros.append("Modo do Wi-Fi deve ser hotspot ou cliente.")
         hs, cl = wifi["hotspot"], wifi["cliente"]
-        for e in (validar_ssid(hs["ssid"]), validar_senha_wifi(hs["senha"])):
-            if e:
-                erros.append(f"Hotspot: {e}")
+        # o marcador do SSID é válido enquanto ninguém escolheu um nome: o
+        # _ssid_unico troca por OpenDongle_<4 hex> assim que der para ler o id
+        if hs["ssid"] != SSID_A_GERAR:
+            for e in (validar_ssid(hs["ssid"]), validar_senha_wifi(hs["senha"])):
+                if e:
+                    erros.append(f"Hotspot: {e}")
         if not (isinstance(hs["canal"], int) and 1 <= hs["canal"] <= 13):
             erros.append("Canal do hotspot deve ser de 1 a 13.")
         if not re.match(r"^[A-Z]{2}$", hs["pais"]):
@@ -186,6 +214,9 @@ def validar(cfg):
             if not isinstance(r.get("auto"), bool):
                 erros.append("Rede conhecida: 'auto' deve ser true/false.")
 
+        for chave in ("ativo", "no_pc"):
+            if not isinstance(cfg["wan"][chave], bool):
+                erros.append(f"wan.{chave} deve ser true/false.")
         for mccmnc, apn in cfg["wan"]["apn_extra"].items():
             if not (RE_MCCMNC.match(mccmnc) and isinstance(apn, str)
                     and RE_APN.match(apn)):
@@ -261,6 +292,57 @@ def _ler_ini_nm(caminho):
     return valores
 
 
+def sincronizar_perfil_nm(ssid: str, senha: str) -> bool:
+    """Mantém o perfil do hotspot do NetworkManager em dia com o config central.
+
+    DEPOIS DA MIGRAÇÃO quem manda no hotspot é o hostapd, e o NM fica
+    masked (ver opendongle_apply._aplicar_rede). Mas o arquivo continua no
+    disco, com os valores de fábrica da imagem base, e tem cara de "a
+    configuração de rede": ssid= e psk= legíveis, no lugar óbvio de se
+    procurar. O resultado é um arquivo que MENTE — mostra um SSID que não
+    existe em nenhum outro lugar. Quem for investigar lê ele primeiro e
+    chega na resposta errada. Foi o que aconteceu aqui.
+
+    Reescrever, e não apagar: existe migração reversa (o apply faz
+    'systemctl unmask' do NM). Apagado, desfazer a migração deixaria o
+    hotspot sem perfil nenhum.
+
+    Devolve True se escreveu.
+    """
+    if not os.path.exists(NM_HOTSPOT):
+        return False          # NM nunca esteve aqui: nada a sincronizar
+    try:
+        with open(NM_HOTSPOT) as f:
+            linhas = f.read().splitlines()
+    except OSError:
+        return False
+    novos = {"ssid": ssid, "psk": senha}
+    vistos = set()
+    mudou = False
+    saida = []
+    for linha in linhas:
+        chave = linha.split("=", 1)[0].strip() if "=" in linha else ""
+        if chave in novos:
+            if linha != f"{chave}={novos[chave]}":
+                mudou = True
+            saida.append(f"{chave}={novos[chave]}")
+            vistos.add(chave)
+        else:
+            saida.append(linha)
+    faltando = [c for c in novos if c not in vistos]
+    if not mudou and not faltando:
+        return False          # já estava certo: não toca no arquivo
+    try:
+        tmp = NM_HOTSPOT + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(saida + [f"{c}={novos[c]}" for c in faltando]) + "\n")
+        os.chmod(tmp, 0o600)  # o NM é 0600: a senha do hotspot fica nele
+        os.replace(tmp, NM_HOTSPOT)
+        return True
+    except OSError:
+        return False
+
+
 def migrar_estado_atual():
     """Monta a config a partir do que o dongle já usa, pra ninguém perder
     SSID, senha ou APNs cadastrados ao ganhar a config central. O hostname
@@ -268,9 +350,11 @@ def migrar_estado_atual():
     e herdar o nome da imagem base faria um 'aplicar' futuro desfazer isso."""
     cfg = copy.deepcopy(PADRAO)
     nm = _ler_ini_nm(NM_HOTSPOT)
-    if nm.get("ssid") and not validar_ssid(nm["ssid"]):
+    if (nm.get("ssid") and nm["ssid"] not in SSID_DE_FABRICA
+            and not validar_ssid(nm["ssid"])):
         cfg["wifi"]["hotspot"]["ssid"] = nm["ssid"]
-    if nm.get("psk") and not validar_senha_wifi(nm["psk"]):
+    if (nm.get("psk") and nm["psk"] not in SENHA_DE_FABRICA
+            and not validar_senha_wifi(nm["psk"])):
         cfg["wifi"]["hotspot"]["senha"] = nm["psk"]
     try:
         fuso = open("/etc/timezone").read().strip()
@@ -289,16 +373,43 @@ def migrar_estado_atual():
     return cfg
 
 
+def _ssid_unico(cfg):
+    """Se o SSID ainda for o marcador, troca por OpenDongle_<4 hex do id>.
+    Devolve True se mexeu.
+
+    Só age enquanto o nome for o marcador — um nome que o usuário escolheu
+    (no painel, no cadastro ou por outra via) nunca é sobrescrito."""
+    if cfg.get("wifi", {}).get("hotspot", {}).get("ssid") != SSID_A_GERAR:
+        return False
+    rotulo = "0000"
+    try:
+        with open(ID_APARELHO) as f:
+            atual = f.read().strip()
+        if re.fullmatch(r"[0-9a-f]{16}", atual):
+            rotulo = atual[-SUFIXO_SSID_HEX:].upper()
+    except OSError:
+        pass   # ainda sem id gravado: o instalador roda logo depois e resolve
+    cfg["wifi"]["hotspot"]["ssid"] = f"{NOME_BASE_SSID}_{rotulo}"
+    return True
+
+
 def carregar():
     """Config atual. Na primeira vez (arquivo ausente), migra o estado do
     dongle e salva. Arquivo corrompido NÃO é sobrescrito sozinho: levanta
     erro pra quem chamou mostrar e o usuário decidir (restaurar/reset)."""
     if not os.path.exists(CONFIG):
         cfg = migrar_estado_atual()
+        _ssid_unico(cfg)
         salvar(cfg)
         return cfg
     with open(CONFIG) as f:
         cfg = _mesclar(PADRAO, json.load(f))
+    if _ssid_unico(cfg):
+        try:
+            salvar(cfg)
+        except (OSError, ValueError):
+            pass   # sem permissão de escrita: o nome fica em memória até o
+                   # instalador rodar de novo
     if _migrar(cfg):
         try:
             salvar(cfg)
@@ -335,6 +446,18 @@ def salvar(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
         f.write("\n")
     os.replace(tmp, CONFIG)
+
+
+def atualizar(parcial):
+    """Atualiza campos da config (merge por seção) e salva. Devolve a config."""
+    cfg = carregar()
+    for secao, valores in parcial.items():
+        if isinstance(valores, dict) and isinstance(cfg.get(secao), dict):
+            cfg[secao].update(valores)
+        else:
+            cfg[secao] = valores
+    salvar(cfg)
+    return cfg
 
 
 def exportar():

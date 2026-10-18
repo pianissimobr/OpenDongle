@@ -46,6 +46,21 @@ EARLYOOM_CONF = """# OpenDongle: com zram o padrao (-m 10 -s 10) quase nunca age
 EARLYOOM_ARGS="-m 8 -s 100 -r 3600 --avoid ^(systemd|systemd-.+|sshd|sshd-session|dnsmasq|hostapd|wpa_supplicant|rmtfs|qrtr-ns|dbus-daemon|apt-get|dpkg|http|https|gpgv|store)$"
 """
 
+# Journal no eMMC, mas curto: sem ele um desligamento sozinho (calor, energia)
+# não deixa rastro — o journal em RAM some junto. Guarda só 7 dias / 16M
+# (o padrão do systemd guarda até ~10% do disco, sem prazo) e grava a cada
+# 1 min; mensagens críticas vão pro disco na hora.
+JOURNALD_DROPIN = "/etc/systemd/journald.conf.d/60-opendongle.conf"
+JOURNALD_CONF = """# GERADO pelo OpenDongle: journal persistente e curto (causa de desligamentos)
+[Journal]
+Storage=persistent
+SystemMaxUse=16M
+SystemMaxFileSize=2M
+MaxRetentionSec=7day
+RuntimeMaxUse=16M
+SyncIntervalSec=1m
+"""
+
 
 # ------------------------------------------------------------- SSH helpers
 SSH_BASE = ["-o", "StrictHostKeyChecking=no",
@@ -121,19 +136,19 @@ def diag(senha, ip):
 # Cada etapa: (nome, comando_bash_aplicar, comando_bash_reverter)
 # Os comandos rodam como ROOT no dongle e são idempotentes.
 
-def montar_etapas():
+def montar_etapas(sem_4g=False):
     etapas = []
 
-    # 1. journald em RAM (volátil) — logs param de bater no eMMC
+    # 1. journald persistente e curto (7 dias / 16M): pouca escrita no eMMC,
+    #    mas um desligamento sozinho deixa rastro. Substitui o antigo
+    #    tarsila.conf (volátil), que apagava a causa junto com o dongle.
     etapas.append((
-        "Logs em RAM (journald volátil, 32M)",
-        # cria um drop-in; volatile = só RAM, cap de tamanho pequeno
-        "mkdir -p /etc/systemd/journald.conf.d && "
-        "printf '%s\\n[Journal]\\nStorage=volatile\\n"
-        "RuntimeMaxUse=32M\\nSystemMaxUse=32M\\n' "
-        f"'{TAG}' > /etc/systemd/journald.conf.d/tarsila.conf && "
-        "systemctl restart systemd-journald",
+        "Logs persistentes e curtos (journald 7 dias / 16M)",
+        "mkdir -p /etc/systemd/journald.conf.d /var/log/journal && "
         "rm -f /etc/systemd/journald.conf.d/tarsila.conf && "
+        f"cat > {JOURNALD_DROPIN} << \"EOF\"\n{JOURNALD_CONF}EOF\n"
+        "systemctl restart systemd-journald",
+        f"rm -f {JOURNALD_DROPIN} && "
         "systemctl restart systemd-journald",
     ))
 
@@ -202,11 +217,14 @@ def montar_etapas():
 
     # 6. Desligar serviços inúteis num dongle headless (libera RAM/escrita).
     #    Cada um é mascarado (reversível com unmask). Só mexe se existir.
-    inuteis = ["ModemManager", "cups", "cups-browsed",
+    inuteis = ["cups", "cups-browsed",
                "avahi-daemon", "man-db.timer", "apt-daily.timer",
                "apt-daily-upgrade.timer", "e2scrub_all.timer"]
-    # OBS: ModemManager é desligado por padrão porque estes dongles servem
-    # como REDE USB/servidor. Se for usar o 4G, veja --manter-4g.
+    # O ModemManager FICA: é o dono do modem para o 4G do painel
+    # (opendongle_engine), em qualquer papel USB. Só sai com
+    # --sem-4g, para quem usa o dongle apenas como rede USB/servidor.
+    if sem_4g:
+        inuteis.insert(0, "ModemManager")
     aplicar = "; ".join(
         f"systemctl disable --now {s} 2>/dev/null; "
         f"systemctl mask {s} 2>/dev/null" for s in inuteis) + "; true"
@@ -235,8 +253,11 @@ def main():
                     help="mostra o que faria, sem aplicar")
     ap.add_argument("--reverter", action="store_true",
                     help="desfaz tudo que este script aplicou")
+    ap.add_argument("--sem-4g", action="store_true",
+                    help="desliga o ModemManager (dongle só como rede USB; "
+                         "sem 4G, sem SMS/ligação)")
     ap.add_argument("--manter-4g", action="store_true",
-                    help="NÃO desliga o ModemManager (se for usar o 4G)")
+                    help="(padrão agora; mantido por compatibilidade)")
     args = ap.parse_args()
 
     # sanidade de conexão
@@ -245,15 +266,7 @@ def main():
         sys.exit(f"Não conectei em {args.ip} via SSH. Dongle plugado e "
                  f"rede 'linux' conectada?\n{err[:200]}")
 
-    etapas = montar_etapas()
-    if args.manter_4g:
-        etapas = [e for e in etapas
-                  if "serviços inúteis" not in e[0]] + [
-            ("Desligar inúteis (mantendo 4G)",
-             etapas[5][1].replace("ModemManager 2>/dev/null; "
-                                  "systemctl mask ModemManager 2>/dev/null",
-                                  "true"),
-             etapas[5][2])]
+    etapas = montar_etapas(sem_4g=args.sem_4g)
 
     if args.dry_run:
         print("== DRY-RUN — nada será aplicado ==\n")

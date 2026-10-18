@@ -460,7 +460,7 @@ BUSCA += [(f"❓ {pergunta}", f"/ajuda#{id_}", palavras)
 
 def tela_ajuda():
     st = eng.status()
-    trocas = {"{ip}": _e(eng.ip_lan()), "{ssid}": _e(eng.SSID_PADRAO),
+    trocas = {"{ip}": _e(eng.ip_lan()), "{ssid}": _e(eng.ssid_padrao()),
               "{senha_wifi}": _e(eng.SENHA_PADRAO)}
 
     def resposta(texto):
@@ -1803,7 +1803,7 @@ def tela_sistema(r=None):
         <form method='post' action='/reset'>
           <label>Digite RESET pra confirmar</label>
           <input name='confirmacao' autocomplete='off' required>
-          <div class='aviso'>Volta a config ao padrão: Wi-Fi OpenDongle /
+          <div class='aviso'>Volta a config ao padrão: Wi-Fi {_e(eng.ssid_padrao())} /
           opendongle, IPs fixos, redirecionamentos e LEDs apagados.</div>
           <button>Voltar à configuração de fábrica</button>
         </form>

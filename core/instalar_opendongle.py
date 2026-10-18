@@ -20,7 +20,7 @@ Coloca no dongle, via SSH:
   - rede sem NetworkManager: systemd-networkd + hostapd (hotspot) ou
     wpa_supplicant (cliente), com reversão automática se o acesso cair
   - avahi configurado para responder opendongle.local
-  - garante o SSID/senha padrão do hotspot: OpenDongle / opendongle
+  - garante o SSID/senha padrão do hotspot: OpenDongle_<4 hex> / opendongle
   - reinicia o dongle no final, pra ativar o usb-role-autosense de vez
     (ele só decide o papel USB corretamente longe de uma instalação SSH
     em andamento — ver nota no [2/7])
@@ -36,6 +36,7 @@ Uso:
 
 import argparse
 import json
+import shlex
 import shutil
 import socket
 import subprocess
@@ -43,9 +44,12 @@ import sys
 import time
 from pathlib import Path
 
-from otimizar_dongle import EARLYOOM_CONF
+from otimizar_dongle import EARLYOOM_CONF, JOURNALD_CONF, JOURNALD_DROPIN
 
 BASE = Path(__file__).resolve().parent / "opendongle"
+UDEV_BAM_DMUX = """# GERADO pelo OpenDongle: o canal de dados do 4G (bam-dmux) nunca dorme
+ACTION=="add|bind", SUBSYSTEM=="platform", KERNEL=="*:bam-dmux", ATTR{power/control}="on"
+"""
 SERIAL_LOGIN_CONF = """# GERADO pelo OpenDongle: o console serial pede login (a imagem usava --autologin root)
 [Service]
 ExecStart=
@@ -58,7 +62,7 @@ ARQS = ["opendongle_engine.py", "opendongle_cli.py", "opendongle_web.py",
         "opendongle_apply.py", "opendongled.py", "opendongle_proxy.py",
         "opendongle_sistema.py", "opendongle_bluetooth.py", "opendongle_audio.py",
         "opendongle_ajuda.py", "opendongle_api.py",
-        "usb-role-autosense.sh"]
+        "opendongle_relogio.py", "usb-role-autosense.sh"]
 
 # Processo sempre ligado (opendongled): uplink guard, LEDs, descoberta e o
 # repassador da porta 80. NÃO ordenar com "After=usb-role-autosense.service": esse serviço tem
@@ -290,6 +294,18 @@ def main():
         "cat > /etc/systemd/system/opendongle.service << \"EOF\"\n"
         + UNIT +
         "EOF\n"
+        # bam-dmux (dados do 4G) sempre ligado: em "auto" ele dorme e às
+        # vezes não acorda ("Failed to resume: -22") e o 4G morre até o
+        # próximo boot — ver manter_bam_dmux_ligado() no motor
+        "cat > /etc/udev/rules.d/60-opendongle-bam-dmux.rules << \"EOF\"\n"
+        + UDEV_BAM_DMUX +
+        "EOF\n"
+        # journal persistente e curto: sem ele, um desligamento pelo calor
+        # não deixa causa (o antigo tarsila.conf o mantinha só na RAM)
+        "mkdir -p /etc/systemd/journald.conf.d /var/log/journal && "
+        "rm -f /etc/systemd/journald.conf.d/tarsila.conf\n"
+        f"cat > {JOURNALD_DROPIN} << \"EOF\"\n" + JOURNALD_CONF + "EOF\n"
+        "systemctl restart systemd-journald\n"
         "cat > /etc/systemd/system/usb-role-autosense.service << \"EOF\"\n"
         + UNIT_USBROLE +
         "EOF\n"
@@ -363,6 +379,11 @@ def main():
         + SERIAL_LOGIN_CONF + "EOF\n"
         "systemctl daemon-reload && systemctl try-restart getty@ttyGS0.service "
         "serial-getty@ttyMSM0.service\n"
+        # O 4G (vigia no opendongled) fala com o modem pelo ModemManager.
+        # Otimizações antigas o mascaravam: aqui ele volta.
+        "systemctl unmask ModemManager >/dev/null 2>&1; "
+        "systemctl enable --now ModemManager >/dev/null 2>&1 "
+        "|| echo \"aviso: ModemManager nao subiu (4G indisponivel)\"\n"
         "python3 /opt/opendongle/opendongle_cli.py config aplicar "
         "|| echo \"aviso: config central nao aplicou (veja a mensagem acima)\"\n"
         "systemctl daemon-reload && "
@@ -454,23 +475,37 @@ def main():
     elif r.returncode != 0:
         print("   ⚠ migração não feita; o dongle segue no NetworkManager")
 
-    print("== [5/7] Garantindo hotspot padrão OpenDongle/opendongle...")
-    hs = (
-        "sudo -S /opt/opendongle/opendongle_cli.py hotspot "
-        "--ssid OpenDongle --senha opendongle"
-    )
-    r = subprocess.run(ssh + [hs],
+    # O nome da rede leva os 4 últimos hex do id do aparelho, senão dois
+    # dongles na mesma casa teriam o mesmo SSID e o celular pularia entre os
+    # dois. O próprio dongle sabe o id; pedimos o nome a ele em vez de
+    # inventar aqui no PC.
+    print("== [5/7] Garantindo hotspot padrão (OpenDongle_<id>)...")
+    # com sudo: na primeira vez o id ainda não existe e é criado em /etc
+    r = subprocess.run(ssh + ["sudo -S -p '' /opt/opendongle/opendongle_cli.py "
+                              "ssid-padrao"],
                        input=(args.senha + "\n").encode(),
                        capture_output=True)
-    print("   " + (r.stdout.decode(errors="replace").strip()
-                   or r.stderr.decode(errors="replace").strip()[:120]))
+    ssid = r.stdout.decode(errors="replace").strip().splitlines()[-1:] or [""]
+    ssid = ssid[0].strip()
+    if ssid.startswith("OpenDongle_"):
+        hs = ("sudo -S /opt/opendongle/opendongle_cli.py hotspot "
+              f"--ssid {shlex.quote(ssid)} --senha opendongle")
+        r = subprocess.run(ssh + [hs],
+                           input=(args.senha + "\n").encode(),
+                           capture_output=True)
+        print("   " + (r.stdout.decode(errors="replace").strip()
+                       or r.stderr.decode(errors="replace").strip()[:120]))
+    else:
+        ssid = "OpenDongle_<4 hex>"
+        print("   ⚠ não consegui o nome da rede deste dongle; o hotspot fica "
+              "como está. Veja no dongle: opendongle ssid-padrao")
 
-    print("""
+    print(f"""
 == OpenDongle instalado! ==
 No dongle:
   sudo opendongle status
 Do celular/PC:
-  conecte no Wi-Fi 'OpenDongle' (senha: opendongle)
+  conecte no Wi-Fi '{ssid}' (senha: opendongle)
   abra  http://opendongle.local   (ou http://192.168.100.1)
 
 Os LEDs físicos (vermelho/verde/azul) agora contam o estado do dongle sem

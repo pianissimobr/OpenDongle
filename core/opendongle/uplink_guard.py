@@ -79,8 +79,26 @@ def laco():
     """Renova o estado de internet a cada INTERVALO e ajusta o anúncio de
     gateway. Roda como thread do opendongled (ou sozinho pelo main)."""
     ultimo = ultimo_ip = None
+    eng.manter_bam_dmux_ligado()      # antes de qualquer queda dos dados 4G
+    eng.nm_sem_4g_automatico()        # o 4G é do vigia, não do NetworkManager
+    eng.termico_reiniciar()
     while True:
-        estado = eng.tem_internet(max_idade=0)
+        # o papel do thermal-engine do firmware original: segura a CPU e, no
+        # limite, o rádio do 4G antes de o dongle esquentar até apagar
+        for linha in eng.guarda_termica():
+            print(linha, flush=True)
+        saida = eng.saida_internet(max_idade=0)
+        # sem internet e com o 4G ligado: conecta o APN sozinho, em qualquer
+        # papel USB (espera crescente entre tentativas que falham)
+        r = eng.vigiar_4g(saida["internet"])
+        if r is not None:
+            print("4G: " + (r.get("aviso") or "conectado") if r["ok"]
+                  else "4G: " + r.get("erro", "falhou"), flush=True)
+            if r["ok"]:
+                saida = eng.saida_internet(max_idade=0)
+        # internet vinda do próprio PC do cabo: anunciar o dongle como
+        # gateway pra esse PC faria um laço (PC -> dongle -> PC)
+        estado = saida["internet"] and saida["meio"] != "usb"
         # de carona no mesmo laço: anota o endereço que o roteador de casa
         # emprestou (só grava quando muda). É o que o painel mostra depois.
         ip = (eng.registrar_endereco() or {}).get("ip")

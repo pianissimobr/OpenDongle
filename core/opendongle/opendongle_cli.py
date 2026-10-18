@@ -104,6 +104,10 @@ def main():
     p.add_argument("--ssid", required=True)
     p.add_argument("--senha", required=True)
 
+    sub.add_parser("ssid-padrao",
+                   help="mostra o nome de rede padrão deste dongle "
+                        "(OpenDongle_<4 hex do id>)")
+
     p = sub.add_parser("wifi", help="conecta a um Wi-Fi (ou --list)")
     p.add_argument("--ssid")
     p.add_argument("--senha", default="")
@@ -213,7 +217,11 @@ def main():
     p.add_argument("acao", choices=["migrar", "confirmar", "reverter", "inicial"])
 
     args = ap.parse_args()
-    precisa_root()
+    # ssid-padrao só LÊ o id e imprime o nome da rede. O instalador roda no PC
+    # (usuário comum, sem sudo) e precisa perguntar o nome ao dongle — então
+    # este comando não exige root, ao contrário de todos os outros.
+    if args.cmd != "ssid-padrao":
+        precisa_root()
 
     if args.cmd == "backup":
         res = eng.backup()
@@ -253,6 +261,11 @@ def main():
 
     if args.cmd == "status":
         res = eng.status()
+    elif args.cmd == "ssid-padrao":
+        # só imprime o nome, para o instalador no PC poder usá-lo; não mexe
+        # em nada — quem aplica é o subcomando "hotspot"
+        print(eng.ssid_padrao())
+        sys.exit(0)
     elif args.cmd == "hotspot":
         res = eng.set_hotspot(args.ssid, args.senha)
     elif args.cmd == "wifi":

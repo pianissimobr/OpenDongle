@@ -3,8 +3,8 @@
 """
 opendongled.py — o que precisa ficar sempre ligado, num processo Python só
 ============================================================================
-Threads do mesmo processo: uplink guard, LEDs, descoberta na rede e o
-repassador da porta 80. O painel web NÃO mora aqui: ele é um serviço à
+Threads do mesmo processo: uplink guard, LEDs, descoberta na rede, relógio
+(hora confiável sem RTC) e o repassador da porta 80. O painel web NÃO mora aqui: ele é um serviço à
 parte (opendongle-web), ativado pelo systemd no primeiro acesso e encerrado
 quando fica ocioso — o repassador mostra "Carregando painel…" enquanto ele
 sobe. Assim o http.server e as telas não ocupam RAM com ninguém usando.
@@ -22,6 +22,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opendongle_discovery
 import opendongle_led
+import opendongle_relogio
 import opendongle_proxy
 import uplink_guard
 
@@ -44,7 +45,8 @@ def main():
         sys.exit("Precisa rodar como root (é um serviço de sistema).")
     for nome, laco in (("uplink", uplink_guard.laco),
                        ("led", opendongle_led.laco),
-                       ("descoberta", opendongle_discovery.laco)):
+                       ("descoberta", opendongle_discovery.laco),
+                       ("relogio", opendongle_relogio.laco)):
         threading.Thread(target=_supervisionar, args=(nome, laco),
                          name=nome, daemon=True).start()
     # porta 80 na thread principal: se ela cair, o processo sai e o systemd
