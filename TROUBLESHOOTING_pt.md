@@ -320,6 +320,26 @@ Duas causas possíveis:
    python3 restaurar_calibracao_ssh.py
    ```
 
+### O 4G conecta sozinho? E se o dongle esquentar?
+
+Quem cuida do 4G é o `opendongled`, pelo ModemManager, em qualquer papel
+USB. Sem internet, ele conecta no APN da operadora do chip (tabela por
+MCC-MNC) e tenta de novo com espera crescente, de 30 s até 10 min. Para usar
+o dongle só como rede USB, sem 4G, rode o otimizador com `--sem-4g`: ele
+desliga o ModemManager.
+
+O Debian não traz o `thermal-engine` do Android, que freava o rádio quando o
+modem esquentava. Sem ele, roteando 4G, o dongle passou de 90° e desligou.
+A guarda térmica faz esse papel:
+- **78°:** limita a CPU a 800 MHz;
+- **85°:** desconecta e põe o rádio do modem em baixo consumo (o hotspot
+  continua);
+- **abaixo de 72°**, em duas leituras seguidas: o rádio volta e o 4G
+  reconecta sozinho.
+
+As temperaturas vão para o journal a cada minuto acima de 75°. Depois de um
+desligamento, `journalctl -b -1 -u opendongle` mostra como chegou lá.
+
 ### Perdi o backup de um dongle — dá para recuperar?
 
 Depende do que você quer:

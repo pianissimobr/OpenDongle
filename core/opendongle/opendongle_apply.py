@@ -661,6 +661,12 @@ def _aplicar_rede(cfg):
         if _gravar_se_mudou(caminho, conteudo):
             mudou.append(caminho)
     ap_mudou = _gravar_se_mudou(HOSTAPD_CONF, gerar_hostapd(cfg), 0o600)
+    if ap_mudou:
+        # o perfil do NM sobrevive à migração para o networkd e, sozinho,
+        # fica com o SSID de fábrica — mentindo para quem for investigar.
+        # Reescreve em vez de apagar, porque existe migração reversa.
+        conf.sincronizar_perfil_nm(cfg["wifi"]["hotspot"]["ssid"],
+                                   cfg["wifi"]["hotspot"]["senha"])
     cliente = cfg["wifi"]["modo"] == "cliente"
     cl_mudou = cliente and _gravar_se_mudou(WPA_CONF, gerar_wpa_supplicant(cfg), 0o600)
 

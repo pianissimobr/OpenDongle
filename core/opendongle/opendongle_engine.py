@@ -38,7 +38,6 @@ HOTSPOT_CON = "hotspot"       # nome da conexão NM do hotspot (minúsculo
                                 # na imagem base do OpenStick-Builder)
 IFACE_WIFI = "wlan0"
 ADMIN_UID = 1000   # o usuário de administração é achado pelo UID: o nome pode mudar
-SSID_PADRAO = "OpenDongle"
 SENHA_PADRAO = "opendongle"
 
 
@@ -97,28 +96,62 @@ def tem_internet(max_idade=20):
             with open(ESTADO_RUN) as f:
                 estado = json.load(f)
             if time.time() - estado["quando"] < max(max_idade, 30):
+                _INTERNET["via"] = estado.get("via")
                 return bool(estado["internet"])
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    valor = False
-    for iface in interfaces_uplink():
+    valor, via = False, None
+    candidatas = interfaces_uplink()
+    # computador compartilhando a internet pelo cabo: a rota padrão sai pela
+    # própria rede do USB (br0), que interfaces_uplink() deixa de fora
+    padrao = _dev_rota_padrao()
+    if padrao and padrao not in candidatas and padrao != "lo":
+        candidatas.append(padrao)
+    for iface in candidatas:
         for host in HOSTS_TESTE:
             rc, _, _ = _run(["ping", "-c", "1", "-W", "2", "-I", iface, host],
                             timeout=6)
             if rc == 0:
-                valor = True
+                valor, via = True, iface
                 break
         if valor:
             break
-    _INTERNET.update(valor=valor, quando=time.monotonic())
+    _INTERNET.update(valor=valor, quando=time.monotonic(), via=via)
     try:
         os.makedirs(os.path.dirname(ESTADO_RUN), exist_ok=True)
         with open(ESTADO_RUN + ".tmp", "w") as f:
-            json.dump({"internet": valor, "quando": time.time()}, f)
+            json.dump({"internet": valor, "via": via, "quando": time.time()}, f)
         os.replace(ESTADO_RUN + ".tmp", ESTADO_RUN)
     except OSError:
         pass   # sem root (teste no PC): segue só com o cache em memória
     return valor
+
+
+def _dev_rota_padrao():
+    """Interface por onde o kernel mandaria um pacote pra internet agora."""
+    rc, out, _ = _run(["ip", "-4", "route", "get", HOSTS_TESTE[0]], timeout=5)
+    m = re.search(r"\bdev (\S+)", out) if rc == 0 else None
+    return m.group(1) if m else None
+
+
+def _meio_da_interface(iface):
+    """wwan* = modem 4G; wlan0 = Wi-Fi de casa; o resto (br0/usb0, a rede
+    do cabo) = internet compartilhada pelo computador no USB."""
+    if not iface:
+        return None
+    if iface.startswith("wwan"):
+        return "4g"
+    if iface == IFACE_WIFI:
+        return "wifi"
+    return "usb"
+
+
+def saida_internet(max_idade=20):
+    """{'internet': bool, 'meio': '4g' | 'wifi' | 'usb' | None} — por onde o
+    dongle está saindo. 'usb' = o computador do cabo está dando a internet."""
+    internet = tem_internet(max_idade)
+    return {"internet": internet,
+            "meio": _meio_da_interface(_INTERNET.get("via")) if internet else None}
 
 
 def _wlan0_associado():
@@ -160,7 +193,9 @@ def modo_wifi():
 # o último visto POR REDE, em disco: assim, plugando o cabo USB (que reinicia o
 # dongle), o painel ainda sabe dizer onde ele estava.
 ENDERECOS = "/etc/opendongle/enderecos.json"
-ID_APARELHO = "/etc/opendongle/id"
+# O id aceita override por ambiente: os testes rodam no PC e precisam
+# apontar para um diretório temporário, sem poder escrever em /etc.
+ID_APARELHO = os.environ.get("OPENDONGLE_ID_ARQUIVO", "/etc/opendongle/id")
 ULTIMA_CONEXAO = "/run/opendongle/ultima-conexao.json"
 
 
@@ -181,6 +216,31 @@ def id_aparelho():
         f.write(novo + "\n")
     os.replace(ID_APARELHO + ".tmp", ID_APARELHO)
     return novo
+
+
+# O nome da rede do hotspot não pode ser só "OpenDongle": dois dongles na
+# mesma casa (ou no mesmo escritório) teriam o mesmo SSID, o usuário não
+# saberia qual é o dele e o celular ficaria pulando entre os dois. Por isso
+# o padrão carrega os 4 últimos hex do id — o mesmo que a tela de
+# boas-vindas mostra como rótulo, então o usuário casa os dois olhando o
+# aparelho e a lista de redes do celular.
+#
+# 4 hex = 16 bits. Com um ou dois dongles por casa a colisão é improvável;
+# se alguma vez aparecer, o próprio painel deixa o usuário trocar o nome em
+# Sistema › Wi-Fi.
+NOME_BASE = "OpenDongle"
+SUFIXO_SSID_HEX = 4
+
+
+def rotulo_dongle() -> str:
+    """Identificador curto e legível do aparelho: os 4 últimos hex do id, em
+    maiúscula. É o que aparece na tela de boas-vindas e no SSID padrão."""
+    return id_aparelho()[-SUFIXO_SSID_HEX:].upper()
+
+
+def ssid_padrao() -> str:
+    """Nome padrão da rede do dongle: OpenDongle_<4 hex>. Ex.: OpenDongle_6A7."""
+    return f"{NOME_BASE}_{rotulo_dongle()}"
 
 
 def enderecos_por_rede():
@@ -372,8 +432,13 @@ def restaurar(texto):
 def reset():
     r = aplic.aplicar(conf.reset_fabrica())
     if r["ok"]:
+        # O nome da rede é ssid_padrao() (OpenDongle_<4 hex>), nunca "OpenDongle":
+        # com nome fixo, dois dongles na mesma casa colidem e o celular do
+        # cliente pula de uma rede para a outra. A constante antiga SSID_PADRAO
+        # vivia só aqui — e mandava o usuário procurar uma rede que não existe,
+        # já que o reset devolve o config ao marcador "@id@".
         r["aviso"] = ("Configuração de fábrica aplicada. Wi-Fi: "
-                      f"{SSID_PADRAO} / {SENHA_PADRAO}.")
+                      f"{ssid_padrao()} / {SENHA_PADRAO}.")
     return r
 
 
@@ -1339,7 +1404,10 @@ QMI_DEV = "/dev/wwan0qmi0"
 
 
 def _qmi(args, timeout=15):
-    return _run(["qmicli", "-d", QMI_DEV] + args, timeout=timeout)
+    # -p: pelo qmi-proxy, que o ModemManager também usa. Sem ele, o qmicli
+    # abre a porta por fora e disputa com o ModemManager (visto: chamadas
+    # voltando vazias e um wds-start-network travado).
+    return _run(["qmicli", "-p", "-d", QMI_DEV] + args, timeout=timeout)
 
 
 def _campo(saida, rotulo):
@@ -1449,20 +1517,500 @@ def modem_online():
 
 
 def modem_reconectar():
-    """Reaplica o usb-role-autosense.sh inteiro — idempotente (grupos/BT/
-    LEDs não têm efeito colateral de reaplicar) e refaz o setup 4G com a
-    tabela de APN atual. Antes disso, garante o rádio ligado."""
+    """Refaz a conexão de dados 4G agora (botão do painel: força). Antes
+    reiniciava o usb-role-autosense.service inteiro — que redecide o papel da
+    porta USB (derruba quem está no cabo) e, plugado no PC, nem conectava."""
+    return modem_conectar(forcar=True)
+
+
+# ------------------------------------------------ 4G: conexão de dados
+# O ModemManager é o dono do modem (usa a porta QMI pelo qmi-proxy): a
+# conexão passa por ele. qmicli direto na porta, com ele ativo, disputa o
+# modem (visto: wds-start-network travado). Vale em qualquer papel USB —
+# o rmnet (bam-dmux) é interno, não depende de o dongle estar na tomada.
+IFACE_4G = "wwan0"
+METRICA_4G = 700            # Wi-Fi de casa (se houver) ganha da rota do 4G
+
+
+def _mm_modem():
+    rc, out, _ = _run(["mmcli", "-L"], timeout=15)
+    m = re.search(r"/Modem/(\d+)", out) if rc == 0 else None
+    return m.group(1) if m else None
+
+
+def _mm_chaves(args, timeout=20):
+    """mmcli ... -K: 'chave : valor' vira dict."""
+    rc, out, _ = _run(["mmcli"] + args + ["-K"], timeout=timeout)
+    d = {}
+    for linha in out.splitlines() if rc == 0 else []:
+        if ":" in linha:
+            k, v = linha.split(":", 1)
+            d[k.strip()] = v.strip()
+    return d
+
+
+def _apn_do_imsi(imsi):
+    """(mcc-mnc, apn) pelo IMSI do chip: o escolhido à mão pra operadora,
+    senão o da tabela. MNC de 2 dígitos primeiro (Brasil), depois 3 — igual
+    ao usb-role-autosense."""
+    if not imsi or len(imsi) < 6:
+        return "", ""
+    try:
+        extra = conf.carregar()["wan"]["apn_extra"]
+    except (ValueError, OSError, KeyError):
+        extra = {}
+    tabela = apn_operadoras()
+    for chave in (f"{imsi[:3]}-{imsi[3:5]}", f"{imsi[:3]}-{imsi[3:6]}"):
+        apn = extra.get(chave) or tabela.get(chave)
+        if apn:
+            return chave, apn
+    return f"{imsi[:3]}-{imsi[3:5]}", ""
+
+
+# Defeito do driver bam-dmux (visto no dongle de teste): com o controle de
+# energia em "auto", ele dorme 1 s depois de os dados caírem e às vezes não
+# acorda ("bam-dmux: Failed to resume: -22", runtime_status=error). Daí o
+# canal de dados morre — nem reiniciar o driver traz a wwan0 de volta; só um
+# boot. Mantendo-o sempre ligado ("on") ele nunca dorme. A regra do udev
+# (instalador) faz isso no boot; aqui é o reforço.
+BAM_DMUX_PM = "/sys/devices/platform/soc@0/4080000.remoteproc/4080000.remoteproc:bam-dmux/power/control"
+
+
+def manter_bam_dmux_ligado():
+    for caminho in (BAM_DMUX_PM, f"/sys/class/net/{IFACE_4G}/device/power/control"):
+        try:
+            with open(caminho) as f:
+                if f.read().strip() == "on":
+                    return True
+            with open(caminho, "w") as f:
+                f.write("on")
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _subir_iface_4g():
+    # bam-dmux só aceita subir com o canal do modem aberto: recusa (EAGAIN)
+    # por alguns segundos depois de conectar ou de o modem reiniciar
+    for _ in range(8):
+        rc, _, _ = _run(["ip", "link", "set", IFACE_4G, "up"], timeout=5)
+        if rc == 0:
+            return True
+        time.sleep(1.5)
+    return False
+
+
+def _sai_pelo_4g(tentativas=3):
+    # logo depois de pôr a rota o primeiro pacote às vezes se perde
+    for i in range(tentativas):
+        for host in HOSTS_TESTE:
+            rc, _, _ = _run(["ping", "-c", "1", "-W", "3", "-I", IFACE_4G, host], timeout=8)
+            if rc == 0:
+                return True
+        if i < tentativas - 1:
+            time.sleep(2)
+    return False
+
+
+def _bearer_ativo(m):
+    """O bearer conectado com IPv4 (o padrão do LTE ou o que pedimos), como
+    dict {ip, prefixo, gw, mtu}; None se não houver."""
+    info = _mm_chaves(["-m", m])
+    for caminho in [v for k, v in info.items() if k.startswith("modem.generic.bearers.value")]:
+        b = _mm_chaves(["-b", caminho.rsplit("/", 1)[-1]])
+        ip = b.get("bearer.ipv4-config.address", "")
+        prefixo = b.get("bearer.ipv4-config.prefix", "")
+        if b.get("bearer.status.connected") == "yes" and ip and ip != "--" and prefixo.isdigit():
+            return {"ip": ip, "prefixo": prefixo, "gw": b.get("bearer.ipv4-config.gateway", ""),
+                    "mtu": b.get("bearer.ipv4-config.mtu", "")}
+    return None
+
+
+def modem_conectar(forcar=False):
+    """Conecta os dados 4G no APN da operadora do chip e põe a rota.
+    Sem 'forcar', uma conexão que já está no ar e sai pra internet é
+    mantida (só confere a rota) — derrubar e refazer à toa deixava o
+    ModemManager ocupado e o dongle sem 4G (visto ao reiniciar o serviço)."""
     if modem_firmware_ok() is False:
         return {"ok": False, "erro": "O firmware do modem não está instalado "
                 "(partição de rádio vazia). Restaure o backup das partições do "
                 "modem — sem isso não há 4G."}
-    r = modem_online()
-    rc, _, err = _run(["systemctl", "restart", "usb-role-autosense.service"],
-                      timeout=30)
+    manter_bam_dmux_ligado()
+    m = _mm_modem()
+    if not m:
+        return {"ok": False, "erro": "O ModemManager não encontrou o modem (ele "
+                "pode estar reiniciando). Tente de novo em alguns segundos."}
+    info = _mm_chaves(["-m", m])
+    if info.get("modem.generic.state") in ("disabled", "failed"):
+        _run(["mmcli", "-m", m, "-e"], timeout=30)
+    sim = info.get("modem.generic.sim", "--")
+    if not sim or sim == "--":
+        return {"ok": False, "erro": "Sem chip: coloque um chip 4G para ter internet por ele."}
+    if not forcar and info.get("modem.generic.state") == "connected" \
+            and modem_dados_ativos() and _sai_pelo_4g():
+        rotas = _run(["ip", "route", "show", "default", "dev", IFACE_4G], timeout=5)[1]
+        if not rotas.strip():
+            _run(["ip", "route", "replace", "default", "dev", IFACE_4G,
+                  "metric", str(METRICA_4G)], timeout=5)
+        _INTERNET["quando"] = 0.0
+        return {"ok": True, "aviso": "4G já estava conectado."}
+    # LTE: ao registrar, a operadora já abre o bearer padrão, que ocupa a
+    # porta de dados (wwan0) e não sai enquanto o chip estiver na rede — um
+    # --simple-connect a mais responde "No valid data port found". Então,
+    # havendo bearer conectado com endereço, basta configurar a wwan0 com ele.
+    if forcar:
+        _run(["mmcli", "-m", m, "--simple-disconnect"], timeout=30)
+        time.sleep(2)
+    b = _bearer_ativo(m)
+    if b:
+        r = _configurar_4g(b)
+        if r["ok"] and _sai_pelo_4g():
+            r["aviso"] = "4G conectado."
+            return r
+        if not forcar:
+            # bearer "conectado" que não passa tráfego (visto na tomada: só a
+            # reconexão à mão resolveu) — derruba e refaz
+            return modem_conectar(forcar=True)
+        if not r["ok"]:
+            return r
+        return {"ok": False, "erro": "O 4G conectou, mas não sai para a internet "
+                "(a operadora pode estar bloqueando os dados do chip)."}
+    imsi = _mm_chaves(["-i", sim.rsplit("/", 1)[-1]]).get("sim.properties.imsi", "")
+    mcc_mnc, apn = _apn_do_imsi(imsi)
+    if not apn:
+        return {"ok": False, "erro": f"Não conheço o APN da operadora {mcc_mnc or '(chip sem resposta)'}. "
+                "Informe em Internet › Modem 4G › Usar outro APN."}
+    _run(["ip", "addr", "flush", "dev", IFACE_4G], timeout=5)
+    _subir_iface_4g()
+    for _ in range(3):
+        rc, out, err = _run(["mmcli", "-m", m, f"--simple-connect=apn={apn},ip-type=ipv4"],
+                            timeout=90)
+        # outra conexão/desconexão ainda em curso no ModemManager: espera e repete
+        if rc == 0 or "InProgress" not in (err or out):
+            break
+        time.sleep(10)
     if rc != 0:
-        return {"ok": False, "erro": f"Falha ao reiniciar: {err[:120]}"}
-    extra = " O rádio foi ligado." if r.get("mudou") else ""
-    return {"ok": True, "aviso": f"Reconectando — pode levar alguns segundos.{extra}"}
+        return {"ok": False, "erro": f"O 4G não conectou (APN {apn}): {(err or out).strip()[:160]}"}
+    # o endereço do bearer chega uns segundos depois do "connected" (visto logo
+    # após o boot): espera um pouco em vez de desistir
+    for _ in range(8):
+        b = _bearer_ativo(m)
+        if b:
+            break
+        time.sleep(1.5)
+    if not b:
+        return {"ok": False, "erro": "O modem conectou mas não informou o endereço."}
+    r = _configurar_4g(b)
+    if r["ok"] and not _sai_pelo_4g():
+        return {"ok": False, "erro": f"O 4G conectou (APN {apn}), mas não sai para a internet."}
+    if r["ok"]:
+        r["aviso"] = f"4G conectado (APN {apn})."
+    return r
+
+
+def _configurar_4g(b):
+    """Põe o endereço do bearer na wwan0 e a rota padrão por ela."""
+    atual = _run(["ip", "-o", "-4", "addr", "show", "dev", IFACE_4G], timeout=5)[1]
+    if f"{b['ip']}/{b['prefixo']}" not in atual:
+        _run(["ip", "addr", "flush", "dev", IFACE_4G], timeout=5)
+        _run(["ip", "addr", "add", f"{b['ip']}/{b['prefixo']}", "dev", IFACE_4G], timeout=5)
+    if b["mtu"].isdigit():
+        _run(["ip", "link", "set", IFACE_4G, "mtu", b["mtu"]], timeout=5)
+    if not _subir_iface_4g():
+        return {"ok": False, "erro": "O modem conectou, mas a interface do 4G não subiu "
+                "(o modem pode estar reiniciando). O dongle tenta de novo sozinho."}
+    via = ["via", b["gw"]] if b["gw"] and b["gw"] != "--" else []
+    rc, _, err = _run(["ip", "route", "replace", "default"] + via +
+                      ["dev", IFACE_4G, "metric", str(METRICA_4G)], timeout=5)
+    if rc != 0:
+        return {"ok": False, "erro": f"Conectou, mas a rota não entrou: {err.strip()[:120]}"}
+    _INTERNET["quando"] = 0.0          # próxima leitura testa de verdade
+    return {"ok": True}
+
+
+def nm_sem_4g_automatico():
+    """O 4G é do opendongled (vigia + ModemManager). Uma conexão gsm do
+    NetworkManager com autoconnect (a imagem traz a "lte") religa o 4G por
+    conta própria — por cima do "desligado" do painel e da pausa pelo calor."""
+    rc, out, _ = _run(["nmcli", "-t", "-f", "UUID,TYPE,AUTOCONNECT", "connection", "show"], timeout=15)
+    for linha in out.splitlines() if rc == 0 else []:
+        uuid, tipo, auto = (linha.split(":") + ["", ""])[:3]
+        if tipo == "gsm" and auto == "yes":
+            _run(["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"], timeout=15)
+
+
+def modem_desconectar():
+    m = _mm_modem()
+    # conexão gsm do NetworkManager no ar: derrubar por ele, senão ele religa
+    rc, out, _ = _run(["nmcli", "-t", "-f", "UUID,TYPE", "connection", "show", "--active"], timeout=15)
+    for linha in out.splitlines() if rc == 0 else []:
+        uuid, _, tipo = linha.partition(":")
+        if tipo == "gsm":
+            _run(["nmcli", "connection", "down", uuid], timeout=30)
+    if m:
+        _run(["mmcli", "-m", m, "--simple-disconnect"], timeout=30)
+    _run(["ip", "route", "del", "default", "dev", IFACE_4G], timeout=5)
+    _run(["ip", "addr", "flush", "dev", IFACE_4G], timeout=5)
+    _run(["ip", "link", "set", IFACE_4G, "down"], timeout=5)
+    _INTERNET["quando"] = 0.0
+
+
+def modem_dados_ativos():
+    """wwan0 com IPv4 = dados 4G no ar (leitura barata, sem mmcli)."""
+    rc, out, _ = _run(["ip", "-o", "-4", "addr", "show", "dev", IFACE_4G], timeout=5)
+    return rc == 0 and " inet " in f" {out}"
+
+
+def modem_4g_no_pc_set(ligar):
+    """Usar (ou não) o 4G também com o dongle plugado no computador."""
+    err = _alterar_config(lambda c: c["wan"].update(no_pc=bool(ligar)))
+    if err:
+        return {"ok": False, "erro": err}
+    if not ligar:
+        if plugado_no_pc():
+            modem_desconectar()
+        return {"ok": True, "aviso": "No computador, o 4G fica desligado."}
+    if not plugado_no_pc():
+        return {"ok": True, "aviso": "Anotado: o 4G também vai ligar quando o dongle estiver no computador."}
+    r = modem_conectar()
+    if not r["ok"]:
+        r["aviso"] = "Ligado. " + r.pop("erro") + " O dongle segue tentando sozinho."
+        r["ok"] = True
+    return r
+
+
+def modem_4g_set(ligar):
+    """Liga/desliga a internet pelo 4G. Desligado, o vigia não reconecta."""
+    err = _alterar_config(lambda c: c["wan"].update(ativo=bool(ligar)))
+    if err:
+        return {"ok": False, "erro": err}
+    if not ligar:
+        modem_desconectar()
+        return {"ok": True, "aviso": "Internet pelo 4G desligada."}
+    try:
+        no_pc = conf.carregar()["wan"]["no_pc"]
+    except (ValueError, OSError, KeyError):
+        no_pc = False
+    if plugado_no_pc() and not no_pc:
+        return {"ok": True, "aviso": "4G ligado. Como o dongle está no computador, ele só "
+                "conecta na tomada — ou ligue \"Usar o 4G também no computador\"."}
+    r = modem_conectar()
+    if not r["ok"]:
+        r["aviso"] = "4G ligado. " + r.pop("erro") + " O dongle segue tentando sozinho."
+        r["ok"] = True
+    return r
+
+
+_VIGIA_4G = {"proxima": 0.0, "espera": 30, "sem_internet": 0, "ultimo": None}
+USB_ROLE = "/sys/class/usb_role/ci_hdrc.0-role-switch/role"
+
+
+def plugado_no_pc():
+    """Papel da porta USB decidido no boot (usb-role-autosense): "device" =
+    o dongle está ligado num computador; "host" = na tomada."""
+    try:
+        with open(USB_ROLE) as f:
+            return f.read().strip() == "device"
+    except OSError:
+        return False
+
+
+VIGIA_4G_MAX = 600
+
+
+def vigiar_4g(com_internet):
+    """Chamado pelo laço do uplink (15 s): sem internet e com o 4G ligado,
+    conecta sozinho — em qualquer papel USB. Entre tentativas que não
+    resolvem, a espera dobra (30 s ... 10 min) pra não martelar o modem;
+    volta a 30 s quando a internet aparece. Devolve o resultado ou None."""
+    agora = time.monotonic()
+    if com_internet:
+        _VIGIA_4G.update(proxima=0.0, espera=30, sem_internet=0, ultimo=None)
+        return None
+    # uma checagem só pode ser um ping perdido: age na segunda seguida (~30 s)
+    _VIGIA_4G["sem_internet"] += 1
+    if _VIGIA_4G["sem_internet"] < 2 or agora < _VIGIA_4G["proxima"]:
+        return None
+    try:
+        wan = conf.carregar()["wan"]
+    except (ValueError, OSError, KeyError):
+        wan = {"ativo": True, "no_pc": False}
+    # desligado no painel, ou plugado no computador sem a opção "4G também
+    # no computador": não conecta sozinho
+    if not wan.get("ativo", True) or (plugado_no_pc() and not wan.get("no_pc", False)):
+        return None
+    if termico_nivel() >= 2:         # em pausa pelo calor (guarda_termica)
+        return None
+    r = modem_conectar()
+    _VIGIA_4G["ultimo"] = r
+    espera = _VIGIA_4G["espera"]
+    # modem ainda subindo (logo após o boot ou um reinício dele) não é uma
+    # tentativa de verdade: não aumenta a espera. E nos primeiros 10 min de
+    # ligado a espera não passa de 2 min — senão, na tomada, falhas do boot
+    # empurravam a próxima tentativa pra vários minutos depois.
+    nao_pronto = not r["ok"] and ("não encontrou o modem" in r.get("erro", "")
+                                  or "reiniciando" in r.get("erro", ""))
+    teto = VIGIA_4G_MAX if _uptime() > 600 else 120
+    proxima_espera = espera if nao_pronto else min(espera * 2, teto)
+    _VIGIA_4G.update(proxima=agora + espera, espera=proxima_espera)
+    return r
+
+
+def _crashes_modem():
+    """Quantas vezes o firmware do modem caiu desde o boot (o kernel o
+    religa, mas o canal de dados, bam-dmux, pode não voltar)."""
+    rc, out, _ = _run(["dmesg"], timeout=10)
+    return out.count("crash detected in 4080000.remoteproc") if rc == 0 else 0
+
+
+# --------------------------------------------------------------- GUARDA TÉRMICA
+# O firmware original traz o thermal-engine da Qualcomm, que segura o modem
+# quando ele esquenta. No kernel mainline nada age sobre o modem (a zona
+# dele só tem um limite "hot", sem quem obedeça): roteando 4G o dongle
+# passou de 85–91° e apagou em ~6 min (teste de 2026-09-26). O laço do
+# uplink faz esse papel aqui, em degraus e com folga pra não ficar oscilando:
+#   nível 1 (quente):      CPU até 800 MHz e o registro das temperaturas
+#                          a cada minuto (o rastro de um desligamento)
+#   nível 2 (muito quente): rádio do modem em baixo consumo (o hotspot
+#                          continua) até esfriar
+# Só desconectar não basta: o bearer do LTE e a conexão "lte" do
+# NetworkManager da imagem reconectam em segundos, e "mmcli --disable" deixa
+# o rádio online. Visto em 2026-09-27: 5 Mbit/s não segurou (78→92° em 3 min
+# com o 4G "pausado" e religado pelo NM); com o rádio em low-power o PMIC
+# caiu de 97° para 88° em 30 s. Por isso o nível 1 não limita a banda do
+# repasse: o teste mostrou que limitar não segura o calor, e o usuário ficaria
+# preso a ~2 Mbit/s enquanto o dongle estiver morno (ocioso e com sinal ruim
+# ele já fica em 80–84°). Quem segura é a pausa do rádio, no nível 2.
+# O Wi-Fi (wcn36xx) aceita "iw set txpower" mas ignora: não dá pra baixar.
+TERMICO_JSON = "/run/opendongle/termico.json"
+TERMICO_ZONAS = ("modem", "pm8916", "cpu")      # prefixo do tipo da zona
+TERMICO_SOBE = {1: 78, 2: 85}                   # °C: entra no nível
+TERMICO_DESCE = {1: 72, 2: 72}                  # °C: sai dele (abaixo disso)
+TERMICO_CPU_KHZ = {1: 800000, 2: 400000}
+NFT_TERMICO = "opendongle_termico"
+_TERMICO = {"nivel": 0, "abaixo": 0, "log": 0.0}
+
+
+def _temp_guarda():
+    """A zona mais quente entre modem, PMIC e CPU (°C) e todas as leituras."""
+    temps, _ = _temperaturas()
+    quentes = [v for k, v in temps.items() if k.startswith(TERMICO_ZONAS)]
+    return max(quentes, default=None), temps
+
+
+def _cpu_teto(khz):
+    """Frequência máxima da CPU; None devolve o máximo do chip."""
+    for p in glob.glob("/sys/devices/system/cpu/cpufreq/policy*"):
+        try:
+            alvo = khz or int(open(f"{p}/cpuinfo_max_freq").read())
+            with open(f"{p}/scaling_max_freq", "w") as f:
+                f.write(str(alvo))
+        except (OSError, ValueError):
+            pass
+
+
+def _limpar_limite_antigo():
+    """Versões anteriores limitavam o repasse numa tabela nft própria no
+    nível 1; se ela ficou de um processo antigo, sai aqui."""
+    _run(["nft", "delete", "table", "inet", NFT_TERMICO], timeout=10)
+
+
+def _radio_4g(ligar):
+    """Rádio do modem ligado ou em baixo consumo (sem transmitir nada)."""
+    m = _mm_modem()
+    if not m:
+        return
+    if ligar:
+        # enable volta a potência; quem reconecta os dados é o vigia. Só o
+        # enable deixou o rádio "procurando rede" por minutos (2026-09-27);
+        # o registro automático pede à rede na hora. NÃO usar o ciclo QMI
+        # low-power -> online: ele derrubou o firmware do modem
+        # (LTE_RRC_ERR_FATAL_CTLR_DEADLOCK_TMR) e o canal de dados travou.
+        _run(["mmcli", "-m", m, "--set-power-state-on"], timeout=30)
+        _run(["mmcli", "-m", m, "--enable"], timeout=30)
+        _run(["mmcli", "-m", m, "--3gpp-register-home"], timeout=60)
+    else:
+        _run(["mmcli", "-m", m, "--disable"], timeout=30)
+        _run(["mmcli", "-m", m, "--set-power-state-low"], timeout=30)
+
+
+def _aplicar_nivel_termico(nivel, anterior=0):
+    _cpu_teto(TERMICO_CPU_KHZ.get(nivel))
+    if nivel >= 2:
+        modem_desconectar()          # o vigia não reconecta enquanto durar
+        _radio_4g(False)
+    elif anterior >= 2:
+        _radio_4g(True)
+
+
+def termico_reiniciar():
+    """No começo do laço: desfaz limites que um processo anterior deixou."""
+    _TERMICO.update(nivel=0, abaixo=0)
+    _limpar_limite_antigo()
+    m = _mm_modem()
+    if m and _mm_chaves(["-m", m]).get("modem.generic.power-state") == "low":
+        # pausa de um processo anterior: ainda quente, continua em pausa
+        temp, _ = _temp_guarda()
+        if temp is not None and temp >= TERMICO_DESCE[2]:
+            _TERMICO["nivel"] = 2
+            _aplicar_nivel_termico(2)
+            return
+        _radio_4g(True)
+    _aplicar_nivel_termico(0)
+
+
+def termico_estado():
+    """O que o laço anotou por último (lido pelo painel, outro processo)."""
+    try:
+        with open(TERMICO_JSON) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"nivel": 0, "temp": None}
+
+
+def termico_nivel():
+    return _TERMICO["nivel"]
+
+
+def guarda_termica():
+    """Chamado a cada volta do laço do uplink. Sobe de nível na hora; desce
+    depois de 2 leituras seguidas abaixo da folga. Devolve linhas pro log
+    (com prefixo de prioridade do journal: <2> é crítico e grava na hora)."""
+    temp, temps = _temp_guarda()
+    if temp is None:
+        return []
+    atual, linhas = _TERMICO["nivel"], []
+    novo = atual
+    while novo < 2 and temp >= TERMICO_SOBE[novo + 1]:
+        novo += 1
+    if novo == atual and atual > 0 and temp < TERMICO_DESCE[atual]:
+        _TERMICO["abaixo"] += 1
+        if _TERMICO["abaixo"] >= 2:
+            novo = atual - 1
+    else:
+        _TERMICO["abaixo"] = 0
+    resumo = " · ".join(f"{k.replace('-thermal', '')} {v:.0f}°" for k, v in temps.items())
+    if novo != atual:
+        _aplicar_nivel_termico(novo, atual)
+        _TERMICO.update(nivel=novo, abaixo=0)
+        texto = {0: "temperatura normal: CPU sem limite",
+                 1: "dongle quente: CPU limitada",
+                 2: "dongle muito quente: 4G em pausa até esfriar"}[novo]
+        linhas.append(f"<{2 if novo == 2 else 4}>térmico nível {novo} — {texto} ({resumo})")
+    elif temp >= 75 and time.monotonic() - _TERMICO["log"] >= 60:
+        # o rastro que faltava pra explicar um desligamento
+        linhas.append(f"<5>temperatura: {resumo}")
+        _TERMICO["log"] = time.monotonic()
+    try:
+        os.makedirs(os.path.dirname(TERMICO_JSON), exist_ok=True)
+        tmp = TERMICO_JSON + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"nivel": novo, "temp": round(temp)}, f)
+        os.replace(tmp, TERMICO_JSON)
+    except OSError:
+        pass
+    return linhas
 
 
 def _home_mccmnc():
@@ -1475,6 +2023,9 @@ def _home_mccmnc():
     mnc = _campo(out, "MNC")
     mcc = "".join(ch for ch in mcc if ch.isdigit())
     mnc = "".join(ch for ch in mnc if ch.isdigit())
+    # o qmicli devolve o número sem o zero: a TIM (724-03) vem como MNC '3'
+    if len(mnc) == 1:
+        mnc = "0" + mnc
     if len(mcc) == 3 and 2 <= len(mnc) <= 3:
         return f"{mcc}-{mnc}"
     return ""
@@ -1487,6 +2038,38 @@ def modem_apn_auto(apn):
         return {"ok": False, "erro": "Não consegui identificar a operadora do "
                 "chip. Confira se o chip está inserido e reconhecido."}
     return modem_set_apn(mcc_mnc, apn)
+
+
+def apn_operadoras():
+    """A tabela MCC-MNC -> APN que o usb-role-autosense usa no boot (APN_MAP).
+    Lida do próprio script pra não existirem duas tabelas a manter — e do
+    que roda de fato (/usr/local/bin) antes da cópia em /opt: se as duas
+    divergirem (atualização só do painel), a tela mostra o que o 4G usa."""
+    for caminho in ("/usr/local/bin/usb-role-autosense.sh",
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "usb-role-autosense.sh")):
+        try:
+            texto = open(caminho).read()
+        except OSError:
+            continue
+        return dict(re.findall(r'\["(\d{3}-\d{2,3})"\]="([^"]+)"', texto))
+    return {}
+
+
+def modem_apn_padrao():
+    """Tira o APN escolhido à mão para a operadora do chip: volta o da tabela."""
+    mcc_mnc = _home_mccmnc()
+    if not mcc_mnc:
+        return {"ok": False, "erro": "Não consegui identificar a operadora do "
+                "chip. Confira se o chip está inserido e reconhecido."}
+    err = _alterar_config(lambda c: c["wan"]["apn_extra"].pop(mcc_mnc, None))
+    if err:
+        return {"ok": False, "erro": err}
+    r = config_aplicar()
+    if not r["ok"]:
+        return r
+    return {"ok": True, "aviso": "Voltou ao APN da operadora. Toque em Reconectar 4G "
+            "para aplicar agora."}
 
 
 def modem_set_apn(mcc_mnc, apn):
