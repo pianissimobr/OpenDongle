@@ -446,6 +446,99 @@ def sha256_arquivo(caminho, bloco=1 << 22):
     return h.hexdigest()
 
 
+# ===================================================== IDENTIDADE DO BACKUP
+# 'sec' e 'fsg' nunca mudam com o uso (o modem só regrava modemst1/2) e são
+# únicos por aparelho: o fsg é a cópia de fábrica do EFS, onde mora o IMEI.
+# O hash dos dois é a impressão digital do dongle. Gravar o EFS de outro
+# aparelho deixa o IMEI clonado ou zerado, então nada de rádio é gravado
+# sem que essa impressão bata.
+PARTICOES_IDENTIDADE = ("sec", "fsg")
+
+
+def identidade_backup(pasta):
+    """{'sec': sha256, 'fsg': sha256} do backup (do manifesto, se houver)."""
+    pasta = Path(pasta)
+    try:
+        arquivos = json.loads((pasta / "manifesto.json").read_text())["arquivos"]
+    except (OSError, ValueError, KeyError):
+        arquivos = {}
+    ident = {}
+    for p in PARTICOES_IDENTIDADE:
+        h = arquivos.get(f"{p}.bin", {}).get("sha256")
+        if not h and (pasta / f"{p}.bin").exists():
+            h = sha256_arquivo(pasta / f"{p}.bin")
+        ident[p] = h
+    return ident
+
+
+def mesma_identidade(a, b):
+    """True só se sec e fsg existem nos dois lados e batem."""
+    return all(a.get(p) and a.get(p) == b.get(p) for p in PARTICOES_IDENTIDADE)
+
+
+def backup_de_fabrica(pasta):
+    """Lê o gpt.txt do backup: tabela stock (system/userdata) = fábrica;
+    tabela do OpenStick (rootfs) = backup de um dongle JÁ instalado, cujos
+    modemst já passaram pelo Debian. None = não dá para saber."""
+    try:
+        texto = (Path(pasta) / "gpt.txt").read_text(errors="replace")
+    except OSError:
+        return None
+    nomes = set(re.findall(r"^\s*(\w+):\s*Offset", texto, re.M))
+    if "rootfs" in nomes:
+        return False
+    if nomes & {"system", "userdata"}:
+        return True
+    return None
+
+
+def backups_verificados():
+    return sorted(p for p in BACKUP_DIR.glob("dongle_*")
+                  if (p / "manifesto.json").exists())
+
+
+def escolher_backup(pasta_arg=None, identidade=None, preferir_fabrica=False):
+    """
+    Escolhe o backup a restaurar SEM chutar "o mais recente de qualquer um":
+      - com identidade do aparelho (lida via SSH/EDL): só backups com o
+        mesmo sec+fsg;
+      - sem identidade (fastboot não lê partição): só segue sozinho se
+        todos os backups forem do MESMO aparelho; senão exige --pasta.
+    Entre os candidatos fica o mais novo; com preferir_fabrica (volta ao
+    Android), o de fábrica vem antes — o orig_fw.bin de um dongle já
+    instalado devolveria o Debian, não o Android.
+    --pasta explícita também é conferida contra a identidade, se houver.
+    """
+    if pasta_arg:
+        pasta = Path(pasta_arg)
+        if not pasta.is_dir():
+            sys.exit(f"Pasta não existe: {pasta}")
+        if identidade and not mesma_identidade(identidade_backup(pasta), identidade):
+            sys.exit(f"ABORTADO: {pasta} NÃO é deste dongle (sec/fsg diferentes). "
+                     "Gravar o EFS de outro aparelho clona ou zera o IMEI.")
+        return pasta
+
+    pastas = backups_verificados()
+    if not pastas:
+        sys.exit(f"Nenhum backup verificado em {BACKUP_DIR}")
+    if identidade:
+        pastas = [p for p in pastas
+                  if mesma_identidade(identidade_backup(p), identidade)]
+        if not pastas:
+            sys.exit("ABORTADO: nenhum backup em "
+                     f"{BACKUP_DIR} é deste dongle (sec/fsg não batem).")
+    else:
+        aparelhos = {tuple(sorted(identidade_backup(p).items())) for p in pastas}
+        if len(aparelhos) > 1:
+            sys.exit("ABORTADO: há backups de mais de um dongle em "
+                     f"{BACKUP_DIR} e neste modo não dá para ler o aparelho. "
+                     "Informe qual usar com --pasta.")
+    if preferir_fabrica:
+        ordem = {True: 2, None: 1, False: 0}
+        return max(pastas, key=lambda p: (ordem[backup_de_fabrica(p)], p.name))
+    return max(pastas, key=lambda p: p.name)
+
+
 # ============================================================ ETAPA 1: BACKUP
 def aceitar_risco_sem_backup(motivo):
     """
@@ -594,12 +687,22 @@ def etapa1_backup(sem_backup=False):
         if not arq.exists() or arq.stat().st_size == 0:
             problemas.append(f"{p}.bin ausente ou vazio")
             continue
-        amostra = arq.read_bytes()[:4096]
+        # O arquivo INTEIRO, não só o começo: um EFS pode começar com um
+        # bloco de zeros e ter conteúdo depois (e vice-versa).
         # 'fsc' e 'sec' podem legitimamente ser quase vazios em alguns
-        # aparelhos; só alertamos. modem/modemst/persist zerados = problema.
-        if amostra.count(0) == len(amostra) and p in ("modem", "modemst1",
-                                                      "modemst2", "persist"):
-            problemas.append(f"{p}.bin parece estar zerado")
+        # aparelhos; só alertamos. modem/modemst/fsg/persist zerados = problema.
+        if p in ("modem", "modemst1", "modemst2", "fsg", "persist") and \
+                not any(arq.read_bytes()):
+            problemas.append(f"{p}.bin está zerado")
+
+    # Backup de um dongle que JÁ tem o OpenStick (rodou de novo o fluxo) não
+    # é de fábrica: os modemst dele já passaram pelo Debian. Fica registrado
+    # no manifesto e as ferramentas de restauração preferem o de fábrica.
+    fabrica = backup_de_fabrica(pasta)
+    if fabrica is False:
+        log("Este dongle JÁ tem o OpenStick instalado: este backup NÃO é o "
+            "de fábrica. Guarde o backup original deste aparelho — é ele "
+            "que deve ser usado para restaurar.", "AVISO")
 
     if sem_backup:
         # modo explícito: valida só o que existir, sem exigências
@@ -618,7 +721,7 @@ def etapa1_backup(sem_backup=False):
 
     # Manifesto com hashes para auditoria
     manifesto = {"data": stamp, "parcial": bool(sem_backup or problemas),
-                 "arquivos": {}}
+                 "fabrica": fabrica, "arquivos": {}}
     for arq in sorted(pasta.glob("*.bin")):
         manifesto["arquivos"][arq.name] = {
             "bytes": arq.stat().st_size,
@@ -996,6 +1099,55 @@ def modo_teste_iterativo(pasta_backup, contagem_assinaturas, pular_edl=False):
 
 
 # ==================================================== ETAPA 6: LIMPEZA
+def ler_imei_ssh(ip, usuario="user", senha="1", tentativas=6):
+    """IMEI que o modem do dongle informa, via SSH. Tenta o ModemManager e,
+    sem ele, o qmicli. None = não deu para ler (sem sshpass, sem as
+    ferramentas no dongle ou o modem ainda subindo)."""
+    if not shutil.which("sshpass"):
+        return None
+    remoto = ("sudo -S -p '' sh -c '"
+              "mmcli -m any -K 2>/dev/null | sed -n \"s/.*equipment-identifier *: *//p\"; "
+              "qmicli -d /dev/wwan0qmi0 --dms-get-ids 2>/dev/null "
+              "| sed -n \"s/.*IMEI: .\\([0-9]*\\).*/\\1/p\"'")
+    cmd = ["sshpass", "-p", senha, "ssh", "-o", "StrictHostKeyChecking=no",
+           "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
+           "-o", "LogLevel=ERROR", f"{usuario}@{ip}", remoto]
+    for _ in range(tentativas):
+        try:
+            r = subprocess.run(cmd, input=senha + "\n", capture_output=True,
+                               text=True, timeout=60)
+            achados = re.findall(r"\b\d{15}\b", r.stdout)
+            if achados:
+                return achados[0]
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(15)   # o modem leva um tempo para subir depois do boot
+    return None
+
+
+def imei_valido(imei):
+    """15 dígitos e não todo zero — IMEI zerado é EFS que o modem não leu."""
+    return bool(imei) and len(imei) == 15 and imei.isdigit() and set(imei) != {"0"}
+
+
+def conferir_imei(ip=IP_PADRAO, usuario="user", senha="1"):
+    """Depois de gravar o rádio, confere que o modem ainda tem identidade.
+    Só avisa: neste ponto o dongle já está instalado e o backup intacto."""
+    imei = ler_imei_ssh(ip, usuario, senha)
+    if imei is None:
+        log("Não consegui ler o IMEI agora (precisa de sshpass no PC e do "
+            "modem no ar). Confira depois: ssh no dongle e "
+            "'mmcli -m any | grep -i imei'.", "AVISO")
+    elif imei_valido(imei):
+        log(f"Modem OK: IMEI {imei}.")
+    else:
+        log(f"ATENÇÃO: o modem responde IMEI {imei} — o EFS gravado não foi "
+            "aceito por este modem. O backup continua intacto; NÃO apague "
+            "nada e veja TROUBLESHOOTING_pt.md (seção Calibração e 4G).",
+            "ERRO")
+    return imei
+
+
 def etapa6_limpeza(pasta_backup):
     """
     *** ETAPA DESATIVADA ATÉ FAZERMOS TESTES REAIS ***
@@ -1003,6 +1155,7 @@ def etapa6_limpeza(pasta_backup):
     Para ativar: descomente o bloco abaixo (e pense duas vezes — o backup
     contém calibrações de rádio ÚNICAS deste dongle, incluindo IMEI).
     """
+    conferir_imei()
     log("Etapa de limpeza do backup: DESATIVADA (aguardando testes reais).")
     # -----------------------------------------------------------------
     # if perguntar_sim_nao(
@@ -1034,21 +1187,17 @@ def preflight():
     LOG_DIR.mkdir(exist_ok=True)
 
 
-def pasta_backup_mais_recente():
-    pastas = sorted(BACKUP_DIR.glob("dongle_*"))
-    # Só aceita backup que passou na verificação (tem manifesto)
-    validas = [p for p in pastas if (p / "manifesto.json").exists()]
-    return validas[-1] if validas else None
-
-
-def fluxo_continuar(placa_arg):
+def fluxo_continuar(placa_arg, pasta_arg=None):
     """
     Retoma a instalação de onde parou: pressupõe que o backup já foi
     feito E verificado (manifesto.json) e que o aboot já foi gravado
     (dongle cai em fastboot no replug). Pula EDL inteiramente.
     """
     log("MODO --continuar: retomando instalação (pulando backup e EDL)")
-    pasta_backup = pasta_backup_mais_recente()
+    # Em fastboot não dá para ler o aparelho: escolher_backup só decide
+    # sozinho se todos os backups forem do mesmo dongle (senão, --pasta)
+    pasta_backup = (escolher_backup(pasta_arg)
+                    if pasta_arg or backups_verificados() else None)
     if pasta_backup is None:
         # Existe pasta de backup sem manifesto (backup que falhou)?
         soltas = sorted(BACKUP_DIR.glob("dongle_*"))
@@ -1091,6 +1240,9 @@ def main():
     ap.add_argument("--continuar", action="store_true",
                     help="Retoma de onde parou (backup já feito, aboot já "
                          "gravado). Pula EDL e vai direto ao fastboot.")
+    ap.add_argument("--pasta",
+                    help="Com --continuar: pasta do backup DESTE dongle "
+                         "(obrigatória se houver backups de mais de um).")
     ap.add_argument("--placa", choices=list(PLACAS),
                     help="Força uma placa específica, pulando a detecção.")
     ap.add_argument("--sem-backup", action="store_true",
@@ -1104,7 +1256,7 @@ def main():
     log("OpenDongle Auto-Installer — início")
 
     if args.continuar:
-        return fluxo_continuar(args.placa)
+        return fluxo_continuar(args.placa, args.pasta)
 
     # ETAPA 1 — backup (obrigatório, salvo aceite explícito de risco)
     if args.sem_backup and not aceitar_risco_sem_backup(
