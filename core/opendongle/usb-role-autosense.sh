@@ -79,11 +79,12 @@ declare -A APN_MAP=(
   ["724-10"]="zap.vivo.com.br"
   ["724-11"]="zap.vivo.com.br"
   ["724-23"]="zap.vivo.com.br"
-  # TIM
+  # TIM (o 724-03 estava como Claro; o modem confirma TIM: IMSI 72403... e
+  # "MNC: 3, Description: TIM" no nas-get-home-network de um chip TIM)
   ["724-02"]="tim.com.br"
+  ["724-03"]="tim.com.br"
   ["724-04"]="tim.com.br"
   # Claro
-  ["724-03"]="claro.com.br"
   ["724-05"]="claro.com.br"
   ["724-38"]="claro.com.br"
   # Oi
@@ -290,9 +291,15 @@ setup_4g() {
     return 0
 }
 
-if [ "$ROLE" = "host" ]; then
-    setup_4g || log "4G: nao configurado (sem SIM/APN/tabela — esperado)"
+# A conexão de dados 4G saiu daqui: é do vigia do opendongled (uplink_guard
+# -> opendongle_engine.vigiar_4g), pelo ModemManager, em QUALQUER papel e com
+# nova tentativa sempre que o dongle ficar sem internet. Aqui era só no HOST,
+# uma vez no boot, e com qmicli direto na porta — que disputa o modem com o
+# ModemManager (visto: wds-start-network travado). setup_4g fica pro
+# diagnóstico manual ('USB_4G_SETUP=1').
+if [ "${USB_4G_SETUP:-0}" = "1" ]; then
+    setup_4g || log "4G: nao configurado (sem SIM/APN/tabela)"
 else
-    log "4G: papel DEVICE -> hotspot nao ativado"
+    log "4G: conexão de dados a cargo do opendongled (papel $ROLE)"
 fi
 exit 0

@@ -23,7 +23,7 @@ Uso:
   python3 opendongle_completo.py
   python3 opendongle_completo.py --ip 192.168.100.1 --senha 1
   python3 opendongle_completo.py --so-pos          # pula a pergunta, vai ao pós
-  python3 opendongle_completo.py --manter-4g       # repassa ao otimizador
+  python3 opendongle_completo.py --sem-4g          # dongle só como rede USB (sem 4G)
 """
 
 import argparse
@@ -323,8 +323,10 @@ def main():
                     help="Pula a pergunta e vai direto ao pós-instalação")
     ap.add_argument("--completo", action="store_true",
                     help="Pula a pergunta e roda o fluxo completo")
+    ap.add_argument("--sem-4g", action="store_true",
+                    help="Repassa ao otimizador: desliga o ModemManager (sem 4G)")
     ap.add_argument("--manter-4g", action="store_true",
-                    help="Repassa ao otimizador (não desliga ModemManager)")
+                    help="(padrão agora; mantido por compatibilidade)")
     args = ap.parse_args()
 
     titulo("OpenDongle — Preparação completa do dongle")
@@ -423,8 +425,8 @@ entre etapas sem perder o que já foi feito.
     # ===== ETAPA 2: otimização =====
     titulo("ETAPA 2/4 — Otimização (durabilidade + velocidade)")
     otim_args = ["--ip", args.ip, "--senha", args.senha]
-    if args.manter_4g:
-        otim_args.append("--manter-4g")
+    if args.sem_4g:
+        otim_args.append("--sem-4g")
     rodar_modulo(MOD_OTIM, otim_args, "Otimização do sistema")
 
     # ===== ETAPA 3: painel OpenDongle =====

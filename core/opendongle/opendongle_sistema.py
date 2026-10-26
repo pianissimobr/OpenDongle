@@ -172,6 +172,7 @@ def hora_do_navegador(epoch_ms):
         return {"ok": True, "mudou": False, "motivo": "já sincronizada pela internet"}
     diferenca = alvo - time.time()
     if abs(diferenca) < TOLERANCIA_RELOGIO_S:
+        _marcar_hora_confirmada()
         return {"ok": True, "mudou": False, "motivo": "diferença pequena"}
     try:
         piso = os.path.getmtime(RELOGIO_TIMESYNCD)
@@ -189,7 +190,19 @@ def hora_do_navegador(epoch_ms):
         os.utime(RELOGIO_TIMESYNCD)     # o próximo boot já parte desta hora
     except OSError:
         pass
+    _marcar_hora_confirmada()
     return {"ok": True, "mudou": True, "ajuste_s": round(diferenca)}
+
+
+def _marcar_hora_confirmada():
+    """Avisa o opendongle_relogio que um navegador confirmou a hora neste boot.
+    Fica em /run: zera no boot."""
+    try:
+        os.makedirs("/run/opendongle", exist_ok=True)
+        with open("/run/opendongle/relogio-navegador", "w") as f:
+            f.write(str(int(time.time())))
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------- CONTA
@@ -425,9 +438,9 @@ def hardware():
                    if l.startswith("MemTotal")), 0)
     _, bt, _ = _run(["hciconfig", "hci0"], timeout=5)
     m_bt = re.search(r"BD Address: ([0-9A-F:]{17})", bt)
-    _, rev, _ = _run(["qmicli", "-d", "/dev/wwan0qmi0", "--dms-get-revision"], timeout=10) \
+    _, rev, _ = _run(["qmicli", "-p", "-d", "/dev/wwan0qmi0", "--dms-get-revision"], timeout=10) \
         if os.path.exists("/dev/wwan0qmi0") else (1, "", "")
-    _, ids, _ = _run(["qmicli", "-d", "/dev/wwan0qmi0", "--dms-get-ids"], timeout=10) \
+    _, ids, _ = _run(["qmicli", "-p", "-d", "/dev/wwan0qmi0", "--dms-get-ids"], timeout=10) \
         if os.path.exists("/dev/wwan0qmi0") else (1, "", "")
     m_rev = re.search(r"Revision:\s*'([^']+)'", rev)
     m_imei = re.search(r"IMEI:\s*'(\d+)'", ids)
