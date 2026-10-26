@@ -107,6 +107,14 @@ class TestMarcadorSubstituido(_IdPatchMixin, unittest.TestCase):
         self.assertFalse(conf._ssid_unico(cfg))
         self.assertEqual(cfg["wifi"]["hotspot"]["ssid"], "Meu Dongle da Cozinha")
 
+    def test_nome_fixo_das_versoes_antigas_vira_unico(self):
+        """O instalador antigo gravava "OpenDongle" sem sufixo: é fábrica, não
+        escolha (visto num dongle atualizado em 2026-10-26)."""
+        ID_FILE.write_text("5960a027c8a05c62\n")
+        cfg = _config_com("OpenDongle")
+        self.assertTrue(conf._ssid_unico(cfg))
+        self.assertEqual(cfg["wifi"]["hotspot"]["ssid"], "OpenDongle_5C62")
+
     def test_nome_generado_anterior_e_respeitado(self):
         """Um SSID que JÁ tem o formato OpenDongle_XXXX também é do usuário
         (ele pode ter digitado à mão)."""

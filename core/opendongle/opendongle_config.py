@@ -35,7 +35,10 @@ ID_APARELHO = os.environ.get("OPENDONGLE_ID_ARQUIVO", "/etc/opendongle/id")
 # OpenDongle_<4 hex> enquanto o dongle continuava no 4G-UFI-XX, e o celular
 # do cliente achava uma rede que não era a da tela. Só um nome QUE ALGUÉM
 # TROCOU é preservado. (Mesma senha: 1234567890 é a de fábrica.)
-SSID_DE_FABRICA = {"4G-UFI-XX"}
+# "OpenDongle" sem sufixo era o nome fixo que as versões antigas do instalador
+# gravavam (--ssid OpenDongle): também é fábrica, não escolha. Visto num dongle
+# atualizado em 2026-10-26, que ficou com o nome fixo de antes.
+SSID_DE_FABRICA = {"4G-UFI-XX", "OpenDongle"}
 SENHA_DE_FABRICA = {"1234567890"}
 
 PADRAO = {
@@ -374,12 +377,13 @@ def migrar_estado_atual():
 
 
 def _ssid_unico(cfg):
-    """Se o SSID ainda for o marcador, troca por OpenDongle_<4 hex do id>.
-    Devolve True se mexeu.
+    """Se o SSID ainda for o marcador (ou um nome de fábrica), troca por
+    OpenDongle_<4 hex do id>. Devolve True se mexeu.
 
-    Só age enquanto o nome for o marcador — um nome que o usuário escolheu
-    (no painel, no cadastro ou por outra via) nunca é sobrescrito."""
-    if cfg.get("wifi", {}).get("hotspot", {}).get("ssid") != SSID_A_GERAR:
+    Só age nesses casos — um nome que o usuário escolheu (no painel, no
+    cadastro ou por outra via) nunca é sobrescrito."""
+    atual_ssid = cfg.get("wifi", {}).get("hotspot", {}).get("ssid")
+    if atual_ssid != SSID_A_GERAR and atual_ssid not in SSID_DE_FABRICA:
         return False
     rotulo = "0000"
     try:
