@@ -447,33 +447,89 @@ def sha256_arquivo(caminho, bloco=1 << 22):
 
 
 # ===================================================== IDENTIDADE DO BACKUP
-# 'sec' e 'fsg' nunca mudam com o uso (o modem só regrava modemst1/2) e são
-# únicos por aparelho: o fsg é a cópia de fábrica do EFS, onde mora o IMEI.
-# O hash dos dois é a impressão digital do dongle. Gravar o EFS de outro
-# aparelho deixa o IMEI clonado ou zerado, então nada de rádio é gravado
-# sem que essa impressão bata.
+# Quem identifica o aparelho é o HARDWARE:
+#   - serial de EDL (Sahara), que o edl imprime e fica no gpt.txt do backup;
+#   - CID do eMMC (/sys/block/mmcblk0/device/cid), que só o Linux lê.
+# O instalador liga os dois no mesmo backup: o serial na Etapa 1 (EDL) e o
+# CID no fim, com o Debian de pé (registrar_cid).
+#
+# sec e fsg NÃO identificam: as próprias restaurações já os copiaram entre
+# aparelhos (visto na bancada em 2026-10: dois dongles com sec/fsg iguais e
+# um deles com IMEI zerado). Ficam só como conferência extra.
 PARTICOES_IDENTIDADE = ("sec", "fsg")
+CHAVES_HARDWARE = ("serial_edl", "emmc_cid")
+_RE_SERIAL_EDL = re.compile(r"Serial:\s+0x([0-9a-fA-F]+)")
+
+
+def serial_edl_do_texto(texto):
+    """Serial do chip na saída do edl (printgpt): 'Serial: 0x0457d3ca'."""
+    m = _RE_SERIAL_EDL.search(texto or "")
+    return m.group(1).lower() if m else None
+
+
+def _ler_json(caminho):
+    try:
+        return json.loads(Path(caminho).read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 def identidade_backup(pasta):
-    """{'sec': sha256, 'fsg': sha256} do backup (do manifesto, se houver)."""
+    """{'serial_edl', 'emmc_cid', 'sec', 'fsg'} do backup. Hardware vem do
+    manifesto, do gpt.txt (serial de EDL) ou do info.json do backup_radio.py
+    (CID); sec/fsg do manifesto ou dos .bin. Ausente = None."""
     pasta = Path(pasta)
-    try:
-        arquivos = json.loads((pasta / "manifesto.json").read_text())["arquivos"]
-    except (OSError, ValueError, KeyError):
-        arquivos = {}
-    ident = {}
+    manifesto = _ler_json(pasta / "manifesto.json")
+    info = _ler_json(pasta / "info.json")
+    arquivos = manifesto.get("arquivos", {})
+    ident = {"serial_edl": manifesto.get("serial_edl"),
+             "emmc_cid": manifesto.get("emmc_cid") or info.get("emmc_cid")}
+    if not ident["serial_edl"]:
+        try:
+            ident["serial_edl"] = serial_edl_do_texto(
+                (pasta / "gpt.txt").read_text(errors="replace"))
+        except OSError:
+            pass
     for p in PARTICOES_IDENTIDADE:
         h = arquivos.get(f"{p}.bin", {}).get("sha256")
         if not h and (pasta / f"{p}.bin").exists():
             h = sha256_arquivo(pasta / f"{p}.bin")
         ident[p] = h
+    if ident["emmc_cid"]:
+        ident["emmc_cid"] = str(ident["emmc_cid"]).strip().lower()
     return ident
 
 
-def mesma_identidade(a, b):
-    """True só se sec e fsg existem nos dois lados e batem."""
+def mesma_identidade(backup, aparelho):
+    """True/False pelo hardware (serial de EDL ou CID do eMMC, o que os dois
+    lados tiverem). None quando não há identificador de hardware em comum:
+    aí ninguém pode dizer que o backup é deste aparelho."""
+    for chave in CHAVES_HARDWARE:
+        if backup.get(chave) and aparelho.get(chave):
+            return backup[chave] == aparelho[chave]
+    return None
+
+
+def _sec_fsg_batem(a, b):
     return all(a.get(p) and a.get(p) == b.get(p) for p in PARTICOES_IDENTIDADE)
+
+
+def registrar_cid(pasta, cid):
+    """Liga o CID do eMMC ao backup feito NESTA instalação (mesmo aparelho do
+    serial de EDL). Só grava se o manifesto ainda não tem outro CID."""
+    caminho = Path(pasta) / "manifesto.json"
+    manifesto = _ler_json(caminho)
+    cid = (cid or "").strip().lower()
+    if not manifesto or not re.fullmatch(r"[0-9a-f]{32}", cid):
+        return False
+    if manifesto.get("emmc_cid") and manifesto["emmc_cid"] != cid:
+        log(f"O backup {pasta} já tem outro CID ({manifesto['emmc_cid']}); "
+            "não troco.", "AVISO")
+        return False
+    manifesto["emmc_cid"] = cid
+    caminho.write_text(json.dumps(manifesto, indent=2))
+    log(f"Backup ligado ao eMMC deste dongle (CID {cid}).")
+    return True
 
 
 def backup_de_fabrica(pasta):
@@ -499,37 +555,58 @@ def backups_verificados():
 
 def escolher_backup(pasta_arg=None, identidade=None, preferir_fabrica=False):
     """
-    Escolhe o backup a restaurar SEM chutar "o mais recente de qualquer um":
-      - com identidade do aparelho (lida via SSH/EDL): só backups com o
-        mesmo sec+fsg;
-      - sem identidade (fastboot não lê partição): só segue sozinho se
-        todos os backups forem do MESMO aparelho; senão exige --pasta.
+    Escolhe o backup a restaurar pelo HARDWARE, nunca "o mais recente":
+      - com identidade do aparelho (EDL: serial; SSH: CID): só backups cujo
+        serial/CID bate. Backup sem identificador de hardware não é escolhido
+        sozinho: exige --pasta (e aí sec/fsg precisam bater);
+      - sem identidade (fastboot não lê o aparelho): só segue sozinho se todos
+        os backups forem do MESMO aparelho; senão exige --pasta.
     Entre os candidatos fica o mais novo; com preferir_fabrica (volta ao
     Android), o de fábrica vem antes — o orig_fw.bin de um dongle já
     instalado devolveria o Debian, não o Android.
-    --pasta explícita também é conferida contra a identidade, se houver.
     """
     if pasta_arg:
         pasta = Path(pasta_arg)
         if not pasta.is_dir():
             sys.exit(f"Pasta não existe: {pasta}")
-        if identidade and not mesma_identidade(identidade_backup(pasta), identidade):
-            sys.exit(f"ABORTADO: {pasta} NÃO é deste dongle (sec/fsg diferentes). "
-                     "Gravar o EFS de outro aparelho clona ou zera o IMEI.")
+        if identidade:
+            ib = identidade_backup(pasta)
+            mesmo = mesma_identidade(ib, identidade)
+            if mesmo is False:
+                sys.exit(f"ABORTADO: {pasta} é de OUTRO dongle (serial de EDL/CID "
+                         "diferentes). Gravar o EFS de outro aparelho clona ou zera o IMEI.")
+            if mesmo is None:
+                if not _sec_fsg_batem(ib, identidade):
+                    sys.exit(f"ABORTADO: {pasta} não tem identificador de hardware "
+                             "e nem sec/fsg batem com este dongle.")
+                log(f"AVISO: {pasta} não tem serial de EDL nem CID: não dá para "
+                    "provar que é deste dongle. Só sec/fsg batem, e eles já foram "
+                    "copiados entre aparelhos. Siga só se tiver certeza.", "AVISO")
         return pasta
 
     pastas = backups_verificados()
     if not pastas:
         sys.exit(f"Nenhum backup verificado em {BACKUP_DIR}")
     if identidade:
-        pastas = [p for p in pastas
-                  if mesma_identidade(identidade_backup(p), identidade)]
-        if not pastas:
-            sys.exit("ABORTADO: nenhum backup em "
-                     f"{BACKUP_DIR} é deste dongle (sec/fsg não batem).")
+        veredito = {p: mesma_identidade(identidade_backup(p), identidade) for p in pastas}
+        candidatos = [p for p, v in veredito.items() if v is True]
+        if not candidatos:
+            sem_hw = [p.name for p, v in veredito.items() if v is None]
+            if sem_hw:
+                lido = " e ".join(n for c, n in (("serial_edl", "serial de EDL"),
+                                                 ("emmc_cid", "CID do eMMC"))
+                                  if identidade.get(c)) or "identificador de hardware"
+                sys.exit(f"ABORTADO: nenhum backup tem o {lido} deste dongle. "
+                         f"Estes não têm como ser comparados: {', '.join(sem_hw)}. "
+                         "Se tiver certeza de qual é, informe com --pasta.")
+            sys.exit(f"ABORTADO: nenhum backup em {BACKUP_DIR} é deste dongle.")
+        pastas = candidatos
     else:
-        aparelhos = {tuple(sorted(identidade_backup(p).items())) for p in pastas}
-        if len(aparelhos) > 1:
+        def aparelho(p):
+            i = identidade_backup(p)
+            return next((i[c] for c in CHAVES_HARDWARE if i.get(c)), None) or \
+                (i.get("sec"), i.get("fsg"))
+        if len({aparelho(p) for p in pastas}) > 1:
             sys.exit("ABORTADO: há backups de mais de um dongle em "
                      f"{BACKUP_DIR} e neste modo não dá para ler o aparelho. "
                      "Informe qual usar com --pasta.")
@@ -721,7 +798,10 @@ def etapa1_backup(sem_backup=False):
 
     # Manifesto com hashes para auditoria
     manifesto = {"data": stamp, "parcial": bool(sem_backup or problemas),
-                 "fabrica": fabrica, "arquivos": {}}
+                 "fabrica": fabrica,
+                 # o chip que o edl viu: é ele que identifica este backup
+                 "serial_edl": serial_edl_do_texto(gpt_texto),
+                 "arquivos": {}}
     for arq in sorted(pasta.glob("*.bin")):
         manifesto["arquivos"][arq.name] = {
             "bytes": arq.stat().st_size,
@@ -1107,7 +1187,7 @@ def ler_imei_ssh(ip, usuario="user", senha="1", tentativas=6):
         return None
     remoto = ("sudo -S -p '' sh -c '"
               "mmcli -m any -K 2>/dev/null | sed -n \"s/.*equipment-identifier *: *//p\"; "
-              "qmicli -d /dev/wwan0qmi0 --dms-get-ids 2>/dev/null "
+              "qmicli -p -d /dev/wwan0qmi0 --dms-get-ids 2>/dev/null "
               "| sed -n \"s/.*IMEI: .\\([0-9]*\\).*/\\1/p\"'")
     cmd = ["sshpass", "-p", senha, "ssh", "-o", "StrictHostKeyChecking=no",
            "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
@@ -1123,6 +1203,21 @@ def ler_imei_ssh(ip, usuario="user", senha="1", tentativas=6):
             pass
         time.sleep(15)   # o modem leva um tempo para subir depois do boot
     return None
+
+
+def ler_cid_ssh(ip, usuario="user", senha="1"):
+    """CID do eMMC do dongle, via SSH (não precisa de root). None se não deu."""
+    if not shutil.which("sshpass"):
+        return None
+    cmd = ["sshpass", "-p", senha, "ssh", "-o", "StrictHostKeyChecking=no",
+           "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
+           "-o", "LogLevel=ERROR", f"{usuario}@{ip}", "cat /sys/block/mmcblk0/device/cid"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None
+    cid = r.stdout.strip().lower()
+    return cid if re.fullmatch(r"[0-9a-f]{32}", cid) else None
 
 
 def imei_valido(imei):
@@ -1156,6 +1251,12 @@ def etapa6_limpeza(pasta_backup):
     contém calibrações de rádio ÚNICAS deste dongle, incluindo IMEI).
     """
     conferir_imei()
+    # o mesmo aparelho do serial de EDL, agora com o Debian de pé: liga o CID
+    # do eMMC ao backup, para a restauração pelo SSH saber de quem ele é
+    cid = ler_cid_ssh(IP_PADRAO)
+    if not (cid and registrar_cid(pasta_backup, cid)):
+        log("Não liguei o CID do eMMC a este backup (sem sshpass ou sem SSH). "
+            "A restauração pelo SSH vai pedir --pasta.", "AVISO")
     log("Etapa de limpeza do backup: DESATIVADA (aguardando testes reais).")
     # -----------------------------------------------------------------
     # if perguntar_sim_nao(

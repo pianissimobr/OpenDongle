@@ -319,26 +319,39 @@ Duas causas possíveis:
    ```
    python3 restaurar_calibracao_ssh.py
    ```
-   A ferramenta lê o `sec`/`fsg` do dongle e só usa um backup **dele**.
-   Ela nunca pega "o mais recente" da pasta: com vários dongles na
-   bancada, gravar o EFS de outro aparelho clona ou zera o IMEI. Antes de
-   gravar, ela salva as partições atuais em `backup/antes_restauro_<data>`.
+   A ferramenta lê o **CID do eMMC** do dongle e só usa um backup **dele**.
+   Ela nunca pega "o mais recente" da pasta: com vários dongles na bancada,
+   gravar o EFS de outro aparelho clona ou zera o IMEI. Antes de gravar, ela
+   salva as partições atuais em `backup/antes_restauro_<data>`.
+
+### Como o backup sabe de qual dongle ele é?
+
+Pelo hardware:
+- **serial do chip (EDL)** — o instalador grava no manifesto do backup, que
+  ele faz em modo EDL;
+- **CID do eMMC** — no fim da instalação, com o Debian de pé, o instalador
+  grava o CID no mesmo backup. O `backup_radio.py` também anota o CID.
+
+`sec` e `fsg` **não** identificam: restaurações antigas os copiaram entre
+aparelhos. Backup sem serial nem CID (feito antes desta versão) não é
+escolhido sozinho: a ferramenta pede `--pasta`, avisa e só aceita se `sec` e
+`fsg` baterem.
 
 ### O IMEI aparece como `000000000000000`
 
-O modem subiu, mas não aceitou o EFS (`modemst1`/`modemst2`) que está
-gravado. Já foi visto na bancada: os `modemst` **de fábrica**, gravados
-depois que o OpenStick trocou o `tz` e os bootloaders, deixaram o IMEI
-zerado. Já os `modemst` que o próprio Debian vinha usando mantinham o
-IMEI certo. O `fsg` e o `sec` eram idênticos nos dois casos.
+O modem subiu, mas não conseguiu ler o EFS (`modemst1`/`modemst2`). O EFS
+só funciona no aparelho onde foi gerado: uma cópia idêntica, num dongle
+diferente, mostra IMEI zerado (visto na bancada, com dois dongles cujos
+`sec`, `fsg` e `modemst` tinham sido copiados de um para o outro).
 
 - Se você acabou de rodar `restaurar_calibracao_ssh.py`, volte o que
   havia antes com o comando que ele imprime
   (`--pasta backup/antes_restauro_<data>`).
+- Procure o backup **deste** aparelho pelo CID ou pelo serial do chip. Um
+  backup feito com o OpenStick já instalado também serve, desde que tenha
+  sido feito neste aparelho: o EFS gerado aqui continua valendo.
 - Para gravar a calibração sem mexer no EFS que funciona, use
   `--sem-modemst`.
-- Nunca grave `modemst` de outro dongle. O `fsg` e o `sec` identificam
-  o aparelho, e as ferramentas recusam backup com esses dois diferentes.
 
 ### O 4G conecta sozinho? E se o dongle esquentar?
 
