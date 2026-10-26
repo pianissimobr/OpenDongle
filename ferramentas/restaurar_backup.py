@@ -16,7 +16,7 @@ Uso:
 
 Antes de escrever, o script confere o sha256 do orig_fw.bin contra o
 manifesto gerado na hora do backup — não restauramos um arquivo corrompido.
-E confere que o backup é DESTE dongle (sec/fsg): gravar o de outro aparelho
+E confere que o backup é DESTE dongle pelo serial do chip (EDL): gravar o de outro aparelho
 clona ou zera o IMEI. Em fastboot (--so-calibracao) não dá para ler o
 aparelho; com backups de mais de um dongle na pasta, --pasta é obrigatório.
 """
@@ -36,14 +36,20 @@ from opendongle_autoinstall import (
     dispositivo_em_edl, dispositivo_em_fastboot,
     matar_processos_conflitantes, diagnosticar_saida_edl,
     edl_cmd, edl_com_retry, LOADER, PARTICOES_CALIBRACAO, WORK,
-    PARTICOES_IDENTIDADE, escolher_backup,
+    PARTICOES_IDENTIDADE, escolher_backup, serial_edl_do_texto,
 )
 
 
 def identidade_edl():
-    """Lê sec e fsg do aparelho em EDL e devolve o sha256 de cada um."""
+    """Identidade do aparelho em EDL: o serial do chip (o que vale) e, como
+    conferência extra, o sha256 de sec e fsg."""
     WORK.mkdir(exist_ok=True)
-    ident = {}
+    texto = edl_com_retry(edl_cmd("printgpt"), "leitura do serial do chip (identidade)",
+                          timeout=120, inatividade_max=60)
+    ident = {"serial_edl": serial_edl_do_texto(texto)}
+    if not ident["serial_edl"]:
+        log("Não li o serial do chip na saída do edl: a escolha do backup "
+            "vai exigir --pasta.", "AVISO")
     for p in PARTICOES_IDENTIDADE:
         destino = WORK / f"identidade_{p}.bin"
         destino.unlink(missing_ok=True)
@@ -89,7 +95,7 @@ def restaurar_total(pasta):
         sys.exit("ABORTADO: dispositivo não apareceu em EDL.")
 
     # Antes de gravar 4 GB: o backup é mesmo deste aparelho?
-    log("Lendo a identidade do aparelho (sec/fsg)...")
+    log("Lendo a identidade do aparelho (serial do chip, sec/fsg)...")
     pasta = escolher_backup(pasta, identidade_edl(), preferir_fabrica=True)
     log(f"Backup deste dongle: {pasta}")
     conferir_integridade(pasta, ["orig_fw.bin"])
@@ -140,7 +146,7 @@ def main():
         log(f"Usando backup: {pasta}")
         restaurar_calibracao(pasta)
     else:
-        # a escolha final acontece com o aparelho em EDL, lendo sec/fsg
+        # a escolha final acontece com o aparelho em EDL, lendo o serial do chip
         restaurar_total(args.pasta)
 
 

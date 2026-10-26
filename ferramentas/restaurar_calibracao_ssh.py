@@ -5,7 +5,7 @@ restaurar_calibracao_ssh.py — Restaura a calibração do modem DE DENTRO do
 Debian já instalado, via SSH, com verificação byte a byte. Automatiza o que
 tentamos manualmente (e que o copiar/colar embaralhou):
 
-  1. Lê a identidade do dongle (sec/fsg) e acha o backup DELE — nunca "o
+  1. Lê a identidade do dongle (CID do eMMC) e acha o backup DELE — nunca "o
      mais recente": o EFS de outro aparelho clona ou zera o IMEI
   2. Salva as partições atuais do dongle antes de mexer (para desfazer)
   3. Envia os .bin, PARA o modem e o rmtfs, desmonta o que estiver montado
@@ -84,17 +84,20 @@ def _aspas(s):
 
 
 def identidade_dongle(SSH, alvo, senha):
-    """sha256 de sec e fsg lidos do próprio dongle."""
+    """Identidade do dongle: o CID do eMMC (o que vale) e, como conferência
+    extra, o sha256 de sec e fsg."""
     script = "; ".join(f"echo {p} $(sha256sum < /dev/disk/by-partlabel/{p} | cut -d' ' -f1)"
-                       for p in PARTICOES_IDENTIDADE)
+                       for p in PARTICOES_IDENTIDADE) + "; echo emmc_cid $(cat /sys/block/mmcblk0/device/cid)"
     r = como_root(SSH, alvo, senha, script, timeout=120)
     ident = {}
     for linha in r.stdout.decode(errors="replace").splitlines():
         partes = linha.split()
         if len(partes) == 2 and partes[0] in PARTICOES_IDENTIDADE and len(partes[1]) == 64:
             ident[partes[0]] = partes[1]
-    if set(ident) != set(PARTICOES_IDENTIDADE):
-        sys.exit("ABORTADO: não consegui ler sec/fsg do dongle para saber "
+        elif len(partes) == 2 and partes[0] == "emmc_cid" and len(partes[1]) == 32:
+            ident["emmc_cid"] = partes[1].lower()
+    if not set(PARTICOES_IDENTIDADE) <= set(ident) or "emmc_cid" not in ident:
+        sys.exit("ABORTADO: não consegui ler o CID e o sec/fsg do dongle para saber "
                  "qual backup é dele.\n" + r.stderr.decode(errors="replace")[-300:])
     return ident
 
@@ -137,7 +140,7 @@ def main():
                  "a rede USB 'linux' conectada?")
 
     # ---- 1. de quem é este dongle? ------------------------------------
-    print("== [1/5] Lendo a identidade do dongle (sec/fsg)...")
+    print("== [1/5] Lendo a identidade do dongle (CID do eMMC, sec/fsg)...")
     ident = identidade_dongle(SSH, alvo, args.senha)
     pasta = escolher_backup(args.pasta, ident)
     print(f"   backup deste dongle: {pasta}")
