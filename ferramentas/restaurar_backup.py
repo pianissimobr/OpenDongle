@@ -8,7 +8,7 @@ byte, incluindo a tabela de partições stock, bootloaders, Android, modem
 e calibrações. É o desfazer total da instalação do OpenStick.
 
 Uso:
-  sudo python3 restaurar_backup.py                # usa o backup mais recente
+  sudo python3 restaurar_backup.py                # acha o backup DESTE dongle
   sudo python3 restaurar_backup.py --pasta backup/dongle_20260706_021558
   sudo python3 restaurar_backup.py --so-calibracao   # só fsc/fsg/modem/...
                                                      # (via fastboot, para
@@ -16,6 +16,9 @@ Uso:
 
 Antes de escrever, o script confere o sha256 do orig_fw.bin contra o
 manifesto gerado na hora do backup — não restauramos um arquivo corrompido.
+E confere que o backup é DESTE dongle (sec/fsg): gravar o de outro aparelho
+clona ou zera o IMEI. Em fastboot (--so-calibracao) não dá para ler o
+aparelho; com backups de mais de um dongle na pasta, --pasta é obrigatório.
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'core'))
@@ -32,21 +35,26 @@ from opendongle_autoinstall import (
     log, run, run_stream, esperar, sha256_arquivo,
     dispositivo_em_edl, dispositivo_em_fastboot,
     matar_processos_conflitantes, diagnosticar_saida_edl,
-    edl_cmd, edl_com_retry, BACKUP_DIR, LOADER, PARTICOES_CALIBRACAO,
+    edl_cmd, edl_com_retry, LOADER, PARTICOES_CALIBRACAO, WORK,
+    PARTICOES_IDENTIDADE, escolher_backup,
 )
 
 
-def achar_pasta(args):
-    if args.pasta:
-        pasta = Path(args.pasta)
-        if not pasta.is_dir():
-            sys.exit(f"Pasta não existe: {pasta}")
-        return pasta
-    pastas = sorted(p for p in BACKUP_DIR.glob("dongle_*")
-                    if (p / "manifesto.json").exists())
-    if not pastas:
-        sys.exit("Nenhum backup verificado encontrado em ./backup")
-    return pastas[-1]
+def identidade_edl():
+    """Lê sec e fsg do aparelho em EDL e devolve o sha256 de cada um."""
+    WORK.mkdir(exist_ok=True)
+    ident = {}
+    for p in PARTICOES_IDENTIDADE:
+        destino = WORK / f"identidade_{p}.bin"
+        destino.unlink(missing_ok=True)
+        edl_com_retry(edl_cmd("r", p, str(destino)),
+                      f"leitura da partição {p} (identidade)",
+                      timeout=300, inatividade_max=120)
+        if not destino.exists():
+            sys.exit(f"ABORTADO: não consegui ler '{p}' do aparelho.")
+        ident[p] = sha256_arquivo(destino)
+        destino.unlink()
+    return ident
 
 
 def conferir_integridade(pasta, arquivos):
@@ -75,11 +83,16 @@ def restaurar_total(pasta):
   Coloque-o em modo EDL: desplugue e replugue SEGURANDO O BOTÃO.
   (lsusb deve mostrar 05c6:9008)
 """)
-    conferir_integridade(pasta, ["orig_fw.bin"])
     matar_processos_conflitantes()
     if not esperar(dispositivo_em_edl, "dispositivo em modo EDL",
                    timeout=300, intervalo=2):
         sys.exit("ABORTADO: dispositivo não apareceu em EDL.")
+
+    # Antes de gravar 4 GB: o backup é mesmo deste aparelho?
+    log("Lendo a identidade do aparelho (sec/fsg)...")
+    pasta = escolher_backup(pasta, identidade_edl(), preferir_fabrica=True)
+    log(f"Backup deste dongle: {pasta}")
+    conferir_integridade(pasta, ["orig_fw.bin"])
 
     total = pasta / "orig_fw.bin"
     log(f"Escrevendo a flash completa de volta ({total.stat().st_size/1e9:.2f} GB).")
@@ -113,7 +126,7 @@ def restaurar_calibracao(pasta):
 def main():
     ap = argparse.ArgumentParser(
         description="Restaura o dongle ao firmware original (via backup)")
-    ap.add_argument("--pasta", help="Pasta do backup (padrão: mais recente)")
+    ap.add_argument("--pasta", help="Pasta do backup (padrão: o deste dongle)")
     ap.add_argument("--so-calibracao", action="store_true",
                     help="Restaura apenas fsc/fsg/modem/modemst1/modemst2/"
                          "persist/sec via fastboot (mantém o OpenStick)")
@@ -122,13 +135,13 @@ def main():
     if not LOADER.exists():
         sys.exit("Loader firehose ausente. Rode setup_estrutura.py")
 
-    pasta = achar_pasta(args)
-    log(f"Usando backup: {pasta}")
-
     if args.so_calibracao:
+        pasta = escolher_backup(args.pasta)
+        log(f"Usando backup: {pasta}")
         restaurar_calibracao(pasta)
     else:
-        restaurar_total(pasta)
+        # a escolha final acontece com o aparelho em EDL, lendo sec/fsg
+        restaurar_total(args.pasta)
 
 
 if __name__ == "__main__":
